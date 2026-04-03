@@ -541,29 +541,43 @@ void Candidate::computePlacementAndDisplacement() {
         double tv = 0.0;
         Point p;
         bool found = false;
+        int foundCase = 0;
 
         if (!found && intersectST(e, D, B, C, s, tv) && s >= lo && s <= hi && tv >= lo && tv <= hi) {
             p = Point(e.x + s * (D.x - e.x), e.y + s * (D.y - e.y));
             found = true;
+            foundCase = 1; // E->D crosses B->C
         }
         if (!found && intersectST(A, e, B, C, s, tv) && s >= lo && s <= hi && tv >= lo && tv <= hi) {
             p = Point(A.x + s * (e.x - A.x), A.y + s * (e.y - A.y));
             found = true;
+            foundCase = 2; // A->E crosses B->C
         }
         if (!found && intersectST(e, D, A, B, s, tv) && s > in && s < out && tv > in && tv < out) {
             p = Point(e.x + s * (D.x - e.x), e.y + s * (D.y - e.y));
             found = true;
+            foundCase = 3; // E->D crosses A->B (interior)
         }
         if (!found && intersectST(A, e, C, D, s, tv) && s > in && s < out && tv > in && tv < out) {
             p = Point(A.x + s * (e.x - A.x), A.y + s * (e.y - A.y));
             found = true;
+            foundCase = 4; // A->E crosses C->D (interior)
         }
 
         if (found) {
-            displacement = triAbs(B, e, p) + triAbs(p, C, D);
+            // Two-petal formula: area on each side of the crossing point p
+            if (foundCase == 1)
+                displacement = polygonAreaAbs({A, B, p, e}) + triAbs(p, C, D);
+            else if (foundCase == 2)
+                displacement = triAbs(A, B, p) + polygonAreaAbs({p, e, D, C});
+            else if (foundCase == 3)
+                displacement = triAbs(A, e, p) + polygonAreaAbs({p, B, C, D});
+            else
+                displacement = polygonAreaAbs({A, p, C, B}) + triAbs(p, e, D);
         }
         else {
-            displacement = triAbs(A, B, e) + triAbs(B, C, e) + triAbs(C, D, e);
+            // No crossing: area of the simple closed loop A->B->C->D->E
+            displacement = polygonAreaAbs({A, B, C, D, e});
         }
         return true;
         };
@@ -1029,9 +1043,7 @@ private:
     double computeTotalArea() {
         double total = 0.0;
         for (size_t i = 0; i < rings.size(); i++) {
-            double area = std::abs(computeRingArea(rings[i]));
-            if (i == 0) total += area;
-            else total -= area;
+            total += computeRingArea(rings[i]); // signed: CCW exterior (+), CW holes (-)
         }
         return total;
     }
@@ -1162,7 +1174,7 @@ public:
             if (allowLookahead && largeSingleRing && totalVertices <= targetVertices + 3 && totalVertices > targetVertices) {
                 auto choices = enumerateValidChoices();
                 if (!choices.empty()) {
-                    Candidate best = chooseExactCollapse(20000);
+                    Candidate best = chooseExactCollapse(500);
                     if (debugLogging) {
                         size_t activeSize = collectActiveRing(rings[best.a->ring_id]).size();
                         std::cerr << "single-ring-exact-collapse ring=" << best.a->ring_id
