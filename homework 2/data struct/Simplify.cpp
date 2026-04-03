@@ -64,6 +64,10 @@ static double g_largeSingleRingCompareEps = 1e-9;
 static bool g_largeSingleRingPreferAlternateOnCompareTie = false;
 static bool g_largeSingleRingProtectAdjacent = false;
 
+static const char* getEnvValue(const char* name) {
+    return std::getenv(name);
+}
+
 struct Node {
     size_t ring_id;
     size_t idx;
@@ -1049,88 +1053,68 @@ public:
         g_largeSingleRingCompareEps = 1e-9;
         g_largeSingleRingPreferAlternateOnCompareTie = false;
         g_largeSingleRingProtectAdjacent = false;
-        char* debugValue = nullptr;
-        size_t debugValueLen = 0;
-        debugLogging = (_dupenv_s(&debugValue, &debugValueLen, "APSC_DEBUG") == 0 && debugValue != nullptr);
-        free(debugValue);
-        char* tieValue = nullptr;
-        size_t tieValueLen = 0;
-        if (_dupenv_s(&tieValue, &tieValueLen, "APSC_TIE_EPS") == 0 && tieValue != nullptr) {
+        const char* debugValue = getEnvValue("APSC_DEBUG");
+        debugLogging = (debugValue != nullptr);
+        const char* tieValue = getEnvValue("APSC_TIE_EPS");
+        if (tieValue != nullptr) {
             try {
                 g_largeSingleRingTieEps = std::stod(tieValue);
             }
             catch (...) {
             }
         }
-        free(tieValue);
-        char* tieDirValue = nullptr;
-        size_t tieDirValueLen = 0;
-        if (_dupenv_s(&tieDirValue, &tieDirValueLen, "APSC_TIE_DESC") == 0 && tieDirValue != nullptr) {
+        const char* tieDirValue = getEnvValue("APSC_TIE_DESC");
+        if (tieDirValue != nullptr) {
             std::string dir(tieDirValue);
             g_largeSingleRingPreferDescending = !(dir == "0" || dir == "false" || dir == "False");
         }
         else {
             g_largeSingleRingPreferDescending = true;
         }
-        free(tieDirValue);
-        char* tieModeValue = nullptr;
-        size_t tieModeValueLen = 0;
-        if (_dupenv_s(&tieModeValue, &tieModeValueLen, "APSC_TIE_MODE") == 0 && tieModeValue != nullptr) {
+        const char* tieModeValue = getEnvValue("APSC_TIE_MODE");
+        if (tieModeValue != nullptr) {
             try {
                 g_largeSingleRingTieMode = std::stoi(tieModeValue);
             }
             catch (...) {
             }
         }
-        free(tieModeValue);
-        char* skipTopoValue = nullptr;
-        size_t skipTopoValueLen = 0;
-        if (_dupenv_s(&skipTopoValue, &skipTopoValueLen, "APSC_SKIP_TOPO") == 0 && skipTopoValue != nullptr) {
+        const char* skipTopoValue = getEnvValue("APSC_SKIP_TOPO");
+        if (skipTopoValue != nullptr) {
             std::string skip(skipTopoValue);
             g_largeSingleRingSkipTopo = !(skip == "0" || skip == "false" || skip == "False");
         }
-        free(skipTopoValue);
-        char* sideRuleValue = nullptr;
-        size_t sideRuleValueLen = 0;
-        if (_dupenv_s(&sideRuleValue, &sideRuleValueLen, "APSC_CLOSER_SIDE") == 0 && sideRuleValue != nullptr) {
+        const char* sideRuleValue = getEnvValue("APSC_CLOSER_SIDE");
+        if (sideRuleValue != nullptr) {
             std::string side(sideRuleValue);
             g_largeSingleRingUseCloserSideRule = !(side == "0" || side == "false" || side == "False");
         }
-        free(sideRuleValue);
-        char* placementModeValue = nullptr;
-        size_t placementModeValueLen = 0;
-        if (_dupenv_s(&placementModeValue, &placementModeValueLen, "APSC_LARGE_MODE") == 0 && placementModeValue != nullptr) {
+        const char* placementModeValue = getEnvValue("APSC_LARGE_MODE");
+        if (placementModeValue != nullptr) {
             try {
                 g_largeSingleRingPlacementMode = std::stoi(placementModeValue);
             }
             catch (...) {
             }
         }
-        free(placementModeValue);
-        char* compareEpsValue = nullptr;
-        size_t compareEpsValueLen = 0;
-        if (_dupenv_s(&compareEpsValue, &compareEpsValueLen, "APSC_COMPARE_EPS") == 0 && compareEpsValue != nullptr) {
+        const char* compareEpsValue = getEnvValue("APSC_COMPARE_EPS");
+        if (compareEpsValue != nullptr) {
             try {
                 g_largeSingleRingCompareEps = std::stod(compareEpsValue);
             }
             catch (...) {
             }
         }
-        free(compareEpsValue);
-        char* compareTieValue = nullptr;
-        size_t compareTieValueLen = 0;
-        if (_dupenv_s(&compareTieValue, &compareTieValueLen, "APSC_COMPARE_ALT") == 0 && compareTieValue != nullptr) {
+        const char* compareTieValue = getEnvValue("APSC_COMPARE_ALT");
+        if (compareTieValue != nullptr) {
             std::string alt(compareTieValue);
             g_largeSingleRingPreferAlternateOnCompareTie = !(alt == "0" || alt == "false" || alt == "False");
         }
-        free(compareTieValue);
-        char* protectAdjacentValue = nullptr;
-        size_t protectAdjacentValueLen = 0;
-        if (_dupenv_s(&protectAdjacentValue, &protectAdjacentValueLen, "APSC_PROTECT_ADJ") == 0 && protectAdjacentValue != nullptr) {
+        const char* protectAdjacentValue = getEnvValue("APSC_PROTECT_ADJ");
+        if (protectAdjacentValue != nullptr) {
             std::string protect(protectAdjacentValue);
             g_largeSingleRingProtectAdjacent = !(protect == "0" || protect == "false" || protect == "False");
         }
-        free(protectAdjacentValue);
         g_originalRingSizes.clear();
         g_nextNodeOrder = 0;
         for (size_t i = 0; i < inputRings.size(); i++) {
