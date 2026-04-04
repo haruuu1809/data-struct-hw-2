@@ -14,27 +14,40 @@ struct Point
 {
     double x, y;
 
-    Point() : x(0.0), y(0.0) {}
-    Point(double px, double py) : x(px), y(py) {}
+    Point() {
+        x = 0;
+        y = 0;
+    }
+    
+    /***** @brief Constructs a point from explicit x and y coordinates. *****/
+    Point(double px, double py) {
+        x = px;
+        y = py;
+    }
 
-    // vector addition
-    Point operator+(const Point& other) const { return Point(x + other.x, y + other.y); }
 
-    // vector subtraction
-    Point operator-(const Point& other) const { return Point(x - other.x, y - other.y); }
+    /***** @brief Adds two points component-wise. *****/
+    Point operator+(const Point& other) const {
+        return Point(x + other.x, y + other.y);
+    }
 
-    // scalar multiply
-    Point operator*(double s) const { return Point(x * s, y * s); }
+    /***** @brief Subtracts another point component-wise. *****/
+    Point operator-(const Point& other) const {
+        return Point(x - other.x, y - other.y);
+    }
 
-    // 2D cross product (used for orientation / area)
-    double cross(const Point& other) const
-    {
+    /***** @brief Multiplies this point by a scalar. *****/
+    Point operator*(double scalar) const {
+        return Point(x * scalar, y * scalar);
+    }
+
+    /***** @brief Returns the 2D cross product magnitude with another vector. *****/
+    double cross(const Point& other) const {
         return x * other.y - y * other.x;
     }
 
-    // vector length (distance from origin)
-    double length() const
-    {
+    /***** @brief Returns the Euclidean length of the vector. *****/
+    double length() const {
         return std::sqrt(x * x + y * y);
     }
 
@@ -45,9 +58,9 @@ struct Point
         double len = ab.length();
 
         // if A and B are basically the same point
-        if (len < 1e-12)
+        if (len < 1e-12) {
             return (*this - a).length();
-
+        }
         // standard point-to-line distance formula
         return std::abs(ab.cross(*this - a)) / len;
     }
@@ -63,8 +76,12 @@ struct Node {
     bool protectedVertex;
 
     /***** @brief Creates one vertex node in the circular doubly linked ring. *****/
-    Node(size_t rid, size_t idx, const Point& pt)
-        : ringId(rid), originalIndex(idx), p(pt), active(true), protectedVertex(idx == 0) {
+    Node(size_t rid, size_t idx, const Point& pt) {
+        ringId = rid;
+        originalIndex = idx;
+        p = pt;
+        active = true;
+        protectedVertex = (idx == 0);
     }
 };
 
@@ -81,8 +98,13 @@ struct Candidate {
     Candidate(std::shared_ptr<Node> pa,
         std::shared_ptr<Node> pb,
         std::shared_ptr<Node> pc,
-        std::shared_ptr<Node> pd)
-        : a(pa), b(pb), c(pc), d(pd), e(), displacement(std::numeric_limits<double>::infinity()), placedOnAB(false) {
+        std::shared_ptr<Node> pd) {
+        a = pa;
+        b = pb;
+        c = pc;
+        d = pd;
+        displacement = std::numeric_limits<double>::infinity();
+        placedOnAB = false;
         computeE();
     }
 
@@ -117,8 +139,9 @@ int orientationSign(const Point& a, const Point& b, const Point& c, double eps =
 
 /***** @brief Checks whether q lies on the segment from p to r. *****/
 bool onSegment(const Point& p, const Point& q, const Point& r) {
-    return q.x <= std::max(p.x, r.x) + 1e-9 && q.x + 1e-9 >= std::min(p.x, r.x) &&
-        q.y <= std::max(p.y, r.y) + 1e-9 && q.y + 1e-9 >= std::min(p.y, r.y);
+    bool xInRange = q.x <= std::max(p.x, r.x) + 1e-9 && q.x + 1e-9 >= std::min(p.x, r.x);
+    bool yInRange = q.y <= std::max(p.y, r.y) + 1e-9 && q.y + 1e-9 >= std::min(p.y, r.y);
+    return xInRange && yInRange;
 }
 
 /***** @brief Returns true only when two segments intersect strictly at interior points. *****/
@@ -245,11 +268,11 @@ void Candidate::computeE() {
     // helper: check which side of line a point is on
     auto evalLine = [&](const Point& p) {
         return aCoeff * p.x + bCoeff * p.y + cCoeff;
-        };
+    };
 
     auto sideOfDirectedLine = [&](const Point& p, const Point& l1, const Point& l2) {
         return orientationSign(l1, l2, p);
-        };
+    };
 
     Point linePoint; 
     if (std::abs(aCoeff) > std::abs(bCoeff)) {
@@ -271,7 +294,7 @@ void Candidate::computeE() {
             return true;
         }
         return false;
-        };
+    };
 
     int sideB = sideOfDirectedLine(B, A, D);
     int sideC = sideOfDirectedLine(C, A, D);
@@ -293,18 +316,12 @@ void Candidate::computeE() {
 
     Point primary;
     Point secondary;
-    bool hasPrimary = placedOnAB
-        ? chooseIntersection(A, B, A, primary)
-        : chooseIntersection(C, D, D, primary);
-    bool hasSecondary = placedOnAB
-        ? chooseIntersection(C, D, D, secondary)
-        : chooseIntersection(A, B, A, secondary);
+    bool hasPrimary = placedOnAB ? chooseIntersection(A, B, A, primary) : chooseIntersection(C, D, D, primary);
+    bool hasSecondary = placedOnAB ? chooseIntersection(C, D, D, secondary) : chooseIntersection(A, B, A, secondary);
 
     auto displacementFor = [&](bool onAB, const Point& point) {
-        return onAB
-            ? calcArea({ B, C, D }, { B, point, D })
-            : calcArea({ A, B, C, point }, { A, point });
-        };
+        return onAB ? calcArea({ B, C, D }, { B, point, D }) : calcArea({ A, B, C, point }, { A, point });
+    };
 
     if (!hasPrimary && hasSecondary) {
         placedOnAB = !placedOnAB; // Switch to the other segment if the first placement was unavailable.
