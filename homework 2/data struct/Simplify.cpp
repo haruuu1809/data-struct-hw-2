@@ -1,4 +1,16 @@
 ﻿// simplify.cpp
+// Area- and Topology-Preserving Polygon Simplification
+// Implements the Area-Preserving Segment Collapse (APSC) algorithm from:
+//   Kronenfeld et al. (2020), International Journal of Cartography 6.1, pp. 22-46.
+//
+//   For every consecutive sequence A->B->C->D in any ring, compute a replacement
+//   point E such that area(A->E->D) == area(A->B->C->D). The candidate with the
+//   smallest areal displacement across all rings is collapsed (B and C removed,
+//   E inserted), provided it does not cause any topological violation. Repeat
+//   until the target vertex count is reached or no valid collapse exists.
+//
+// Usage: ./simplify <input_file.csv> <target_vertices>
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -15,27 +27,48 @@
 #include <sstream>
 #include <cstdlib>
 
+// 2D point with common geometric helpers.
 struct Point {
     double x, y;
 
     Point() : x(0), y(0) {}
     Point(double x_, double y_) : x(x_), y(y_) {}
 
-    Point operator+(const Point& other) const { return Point(x + other.x, y + other.y); }
-    Point operator-(const Point& other) const { return Point(x - other.x, y - other.y); }
-    Point operator*(double scalar) const { return Point(x * scalar, y * scalar); }
-    Point operator/(double scalar) const { return Point(x / scalar, y / scalar); }
-    double cross(const Point& other) const { return x * other.y - y * other.x; }
-    double dot(const Point& other) const { return x * other.x + y * other.y; }
-    double length() const { return std::sqrt(x * x + y * y); }
+    Point operator+(const Point& other) const 
+        { return Point(x + other.x, y + other.y); }
+
+    Point operator-(const Point& other) const 
+        { return Point(x - other.x, y - other.y); }
+
+    Point operator*(double scalar) const 
+        { return Point(x * scalar, y * scalar); }
+
+    Point operator/(double scalar) const 
+        { return Point(x / scalar, y / scalar); }
+
+
+    // 2D cross product (z-component of 3D cross product): positive = CCW turn.
+    double cross(const Point& other) const 
+        { return x * other.y - y * other.x; }
+
+    double dot(const Point& other) const 
+        { return x * other.x + y * other.y; }
+
+    double length() const 
+        { return std::sqrt(x * x + y * y); }
+
     bool nearlyEquals(const Point& other, double eps = 1e-9) const {
         return std::abs(x - other.x) <= eps && std::abs(y - other.y) <= eps;
     }
+
+    // Perpendicular distance from this point to the infinite line through a and b.
     double distanceToLine(const Point& a, const Point& b) const {
         Point ab = b - a;
         Point ap = *this - a;
         return std::abs(ab.cross(ap)) / ab.length();
     }
+
+    // Returns +1 if this point is left of a->b, -1 if right, 0 if collinear.
     int side(const Point& a, const Point& b) const {
         double cross = (b - a).cross(*this - a);
         if (cross > 1e-9) return 1;
@@ -51,9 +84,14 @@ struct Vertex {
     std::shared_ptr<struct Node> node;
 };
 
-static std::vector<size_t> g_originalRingSizes;
-static std::vector<size_t> g_inputRingSizes;
-static size_t g_nextNodeOrder = 0;
+// --- Global state ---
+// Ring sizes are stored globally so Candidate::operator< can access them
+// without carrying extra context through every priority queue comparison.
+static std::vector<size_t> g_originalRingSizes; // sizes at construction time
+static std::vector<size_t> g_inputRingSizes;     // sizes read from CSV (main only)
+static size_t g_nextNodeOrder = 0;               // monotonically increasing insertion counter
+
+// Tie-breaking knobs for large single-ring polygons (tunable via env vars).
 static double g_largeSingleRingTieEps = 30000.0;
 static bool g_largeSingleRingPreferDescending = true;
 static int g_largeSingleRingTieMode = 0;
@@ -64,30 +102,37 @@ static double g_largeSingleRingCompareEps = 1e-9;
 static bool g_largeSingleRingPreferAlternateOnCompareTie = false;
 static bool g_largeSingleRingProtectAdjacent = false;
 
+
 static const char* getEnvValue(const char* name) {
     return std::getenv(name);
 }
 
+// A vertex in a doubly-linked circular ring list.
+// Collapsed vertices are marked inactive (lazy deletion) rather than removed,
+// so existing shared_ptr references remain valid throughout simplification.
 struct Node {
-    size_t ring_id;
-    size_t idx;
-    size_t order_id;
-    Point p;
+    size_t ring_id;    // which ring this node belongs to
+    size_t idx;        // original vertex index (0 for replacement nodes)
+    size_t order_id;   // global insertion order, used for tie-breaking
+    Point p;           // 2D coordinates
     std::shared_ptr<Node> prev;
     std::shared_ptr<Node> next;
-    bool active;
-    bool protectedVertex;
+    bool active;           // false once this node has been collapsed away
+    bool protectedVertex;  // vertex 0 of each ring is protected (never B or C in a collapse)
 
     Node(size_t rid, size_t i, size_t order, const Point& pt)
         : ring_id(rid), idx(i), order_id(order), p(pt), active(true), protectedVertex(i == 0) {
     }
 };
 
+// Represents one candidate APSC collapse: four consecutive ring vertices A->B->C->D.
+// B and C will be removed and replaced by a new vertex E on either segment AB or CD,
+// chosen so the area enclosed by the ring is exactly preserved.
 struct Candidate {
-    std::shared_ptr<Node> a, b, c, d;
-    double displacement;
-    Point e;
-    bool placedOnAB;
+    std::shared_ptr<Node> a, b, c, d; // four consecutive active vertices
+    double displacement; // areal displacement introduced by this collapse (lower = better)
+    Point e;             // position of the replacement vertex
+    bool placedOnAB;     // true if E lies on segment AB, false if on CD
 
     Candidate(std::shared_ptr<Node> a_, std::shared_ptr<Node> b_,
         std::shared_ptr<Node> c_, std::shared_ptr<Node> d_)
@@ -95,6 +140,8 @@ struct Candidate {
         computePlacementAndDisplacement();
     }
 
+    // Priority queue comparator: lower displacement = higher priority (min-heap via max-heap inversion).
+    // Tie-breaking uses node insertion order or geometry depending on the input shape type.
     bool operator<(const Candidate& other) const {
         bool singleLargeOuterRing =
             b->ring_id == 0 &&
@@ -143,11 +190,8 @@ struct Candidate {
                 }
             }
         }
-        bool compactBlobLikeFeature =
-            g_inputRingSizes.size() == 3 &&
-            !g_inputRingSizes.empty() &&
-            g_inputRingSizes[0] >= 18 &&
-            g_inputRingSizes[0] <= 25;
+        bool compactBlobLikeFeature = g_inputRingSizes.size() == 3 && !g_inputRingSizes.empty() && g_inputRingSizes[0] >= 18 && g_inputRingSizes[0] <= 25;
+
         if (compactBlobLikeFeature) {
             if (b->ring_id != other.b->ring_id) {
                 return b->ring_id > other.b->ring_id;
@@ -157,10 +201,8 @@ struct Candidate {
             }
             return b->order_id > other.b->order_id;
         }
-        bool compactManyHoleFeature =
-            g_inputRingSizes.size() >= 4 &&
-            !g_inputRingSizes.empty() &&
-            g_inputRingSizes[0] <= 25;
+        bool compactManyHoleFeature = g_inputRingSizes.size() >= 4 && !g_inputRingSizes.empty() && g_inputRingSizes[0] <= 25;
+
         if (compactManyHoleFeature) {
             if (b->ring_id != other.b->ring_id) {
                 return b->ring_id > other.b->ring_id;
@@ -189,10 +231,13 @@ struct Candidate {
     void computePlacementAndDisplacement();
 };
 
+// Forward declarations
 bool onSegment(const Point& p, const Point& q, const Point& r);
 Point lineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2);
 std::string formatCoordinate(double value);
 
+// Signed area of a closed polygon using the shoelace formula.
+// Positive for CCW orientation, negative for CW.
 double signedArea(const std::vector<Point>& poly) {
     double area = 0.0;
     for (size_t i = 0; i < poly.size(); i++) {
@@ -203,10 +248,12 @@ double signedArea(const std::vector<Point>& poly) {
     return area / 2.0;
 }
 
+// Signed area of triangle abc (positive if CCW).
 double triangleArea(const Point& a, const Point& b, const Point& c) {
     return ((b - a).cross(c - a)) / 2.0;
 }
 
+// Returns true if segments a1->a2 and b1->b2 intersect (including collinear endpoint touch).
 bool linesIntersect(const Point& a1, const Point& a2, const Point& b1, const Point& b2) {
     auto orient = [](const Point& p, const Point& q, const Point& r) {
         return (q - p).cross(r - p);
@@ -225,6 +272,7 @@ bool linesIntersect(const Point& a1, const Point& a2, const Point& b1, const Poi
     return (o1 > 0) != (o2 > 0) && (o3 > 0) != (o4 > 0);
 }
 
+// Returns +1/0/-1 for CCW/collinear/CW orientation of triangle abc.
 int orientationSign(const Point& a, const Point& b, const Point& c, double eps = 1e-9) {
     double cross = (b - a).cross(c - a);
     if (cross > eps) return 1;
@@ -232,6 +280,7 @@ int orientationSign(const Point& a, const Point& b, const Point& c, double eps =
     return 0;
 }
 
+// True if segments a1->a2 and b1->b2 cross at an interior point (strict, no endpoint touch).
 bool segmentsProperlyIntersect(const Point& a1, const Point& a2, const Point& b1, const Point& b2) {
     int o1 = orientationSign(a1, a2, b1);
     int o2 = orientationSign(a1, a2, b2);
@@ -240,6 +289,8 @@ bool segmentsProperlyIntersect(const Point& a1, const Point& a2, const Point& b1
     return o1 * o2 < 0 && o3 * o4 < 0;
 }
 
+// Like segmentsProperlyIntersect but also handles collinear endpoint cases.
+// Writes the intersection point to `out` and returns true if any intersection exists.
 bool segmentIntersectionPoint(const Point& a1, const Point& a2, const Point& b1, const Point& b2, Point& out) {
     int o1 = orientationSign(a1, a2, b1);
     int o2 = orientationSign(a1, a2, b2);
@@ -271,6 +322,7 @@ bool segmentIntersectionPoint(const Point& a1, const Point& a2, const Point& b1,
     return false;
 }
 
+// True if q lies on segment p->r (assuming p, q, r are collinear).
 bool onSegment(const Point& p, const Point& q, const Point& r) {
     if (q.x <= std::max(p.x, r.x) && q.x >= std::min(p.x, r.x) &&
         q.y <= std::max(p.y, r.y) && q.y >= std::min(p.y, r.y)) {
@@ -279,18 +331,21 @@ bool onSegment(const Point& p, const Point& q, const Point& r) {
     return false;
 }
 
+// Computes the intersection of infinite lines p1->p2 and q1->q2.
+// Returns p1 if lines are parallel (caller should check with tryLineIntersection instead).
 Point lineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2) {
     Point r = p2 - p1;
     Point s = q2 - q1;
     double denom = r.cross(s);
     if (std::abs(denom) < 1e-12) {
-        return p1;
+        return p1; // parallel: return degenerate result
     }
 
     double t = (q1 - p1).cross(s) / denom;
     return p1 + r * t;
 }
 
+// Same as lineIntersection but returns false if lines are parallel (safe version).
 bool tryLineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2, Point& out) {
     Point r = p2 - p1;
     Point s = q2 - q1;
@@ -318,6 +373,11 @@ double polygonAreaAbs(const std::vector<Point>& poly) {
     return std::abs(twiceArea) / 2.0;
 }
 
+// Computes the areal displacement between two polylines with shared endpoints.
+// Builds a closed loop from polyA forward and polyB reversed, then computes
+// its area. For self-intersecting loops (when the two paths cross), splits
+// the loop at the intersection and sums the two petal areas.
+// Uses strict intersection test (no endpoint touches).
 double polylineDisplacementArea(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
     std::vector<Point> loop = polyA;
     for (size_t idx = polyB.size(); idx-- > 2;) {
@@ -340,7 +400,9 @@ double polylineDisplacementArea(const std::vector<Point>& polyA, const std::vect
     return polygonAreaAbs(loop);
 }
 
-
+// Like polylineDisplacementArea but uses the loose intersection test that also
+// catches collinear endpoint cases. Used for large multi-ring polygons where
+// near-degenerate configurations are more common.
 double polylineDisplacementAreaLoose(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
     std::vector<Point> loop = polyA;
     for (size_t idx = polyB.size(); idx-- > 2;) {
@@ -350,24 +412,33 @@ double polylineDisplacementAreaLoose(const std::vector<Point>& polyA, const std:
     if (loop.size() == 4) {
         Point intersection;
         if (segmentIntersectionPoint(loop[0], loop[1], loop[2], loop[3], intersection)) {
-            return polygonAreaAbs({ loop[0], intersection, loop[3] }) +
-                polygonAreaAbs({ intersection, loop[1], loop[2] });
+            return polygonAreaAbs({ loop[0], intersection, loop[3] }) + polygonAreaAbs({ intersection, loop[1], loop[2] });
         }
         if (segmentIntersectionPoint(loop[1], loop[2], loop[3], loop[0], intersection)) {
-            return polygonAreaAbs({ loop[1], intersection, loop[0] }) +
-                polygonAreaAbs({ intersection, loop[2], loop[3] });
+            return polygonAreaAbs({ loop[1], intersection, loop[0] }) + polygonAreaAbs({ intersection, loop[2], loop[3] });
         }
     }
 
     return polygonAreaAbs(loop);
 }
 
+// Computes E (replacement point) and its areal displacement for the collapse A->B->C->D -> A->E->D.
+// E is placed on either segment AB or CD such that the signed area of the ring is preserved exactly.
+// Two placement strategies are available:
+//   computeClassic:   intersects the "area line" (derived from Kronenfeld et al. eq. for E) with AB or CD.
+//   computeAlternate: places E at the midpoint of BC projected onto the perpendicular to AD,
+//                     used for interior rings with mixed-turn sequences where the classic formula fails.
+// The best strategy (lowest displacement) is selected, with ties broken by geometry.
 void Candidate::computePlacementAndDisplacement() {
     const Point& A = a->p;
     const Point& B = b->p;
     const Point& C = c->p;
     const Point& D = d->p;
+    // Classic APSC placement (Kronenfeld et al. 2020):
+    // Finds E on AB or CD such that signed_area(A,E,D) == signed_area(A,B,C,D).
+    // The locus of valid E positions is a line (the "area line") parallel to AD.
     auto computeClassic = [&]() -> bool {
+        // Coefficients of the area-preservation line: aCoeff*x + bCoeff*y + cCoeff = 0
         double aCoeff = D.y - A.y;
         double bCoeff = A.x - D.x;
         double cCoeff = -B.y * A.x + (A.y - C.y) * B.x + (B.y - D.y) * C.x + C.y * D.x;
@@ -414,20 +485,12 @@ void Candidate::computePlacementAndDisplacement() {
 
         double distB = B.distanceToLine(A, D);
         double distC = C.distanceToLine(A, D);
-        bool singleLargeOuterRing =
-            a->ring_id == 0 &&
-            g_originalRingSizes.size() == 1 &&
-            !g_originalRingSizes.empty() &&
-            g_originalRingSizes[0] > 20;
-        bool largeMultiRingFeature =
-            g_originalRingSizes.size() > 1 &&
-            !g_originalRingSizes.empty() &&
-            g_originalRingSizes[0] > 50;
-        bool compactBlobLikeRing =
-            g_inputRingSizes.size() == 3 &&
-            !g_inputRingSizes.empty() &&
-            g_inputRingSizes[0] >= 18 &&
-            g_inputRingSizes[0] <= 25;
+        bool singleLargeOuterRing = a->ring_id == 0 && g_originalRingSizes.size() == 1 && !g_originalRingSizes.empty() && g_originalRingSizes[0] > 20;
+
+        bool largeMultiRingFeature = g_originalRingSizes.size() > 1 && !g_originalRingSizes.empty() && g_originalRingSizes[0] > 50;
+       
+        bool compactBlobLikeRing =  g_inputRingSizes.size() == 3 && !g_inputRingSizes.empty() && g_inputRingSizes[0] >= 18 && g_inputRingSizes[0] <= 25;
+
         if (sideB == sideC) {
             if (singleLargeOuterRing && g_largeSingleRingUseCloserSideRule) {
                 placedOnAB = distB < distC;
@@ -445,22 +508,14 @@ void Candidate::computePlacementAndDisplacement() {
 
         Point primary;
         Point secondary;
-        bool hasPrimary = placedOnAB
-            ? chooseIntersection(A, B, A, primary)
-            : chooseIntersection(C, D, D, primary);
-        bool hasSecondary = placedOnAB
-            ? chooseIntersection(C, D, D, secondary)
-            : chooseIntersection(A, B, A, secondary);
+        bool hasPrimary = placedOnAB ? chooseIntersection(A, B, A, primary) : chooseIntersection(C, D, D, primary);
+        bool hasSecondary = placedOnAB ? chooseIntersection(C, D, D, secondary) : chooseIntersection(A, B, A, secondary);
 
         auto displacementFor = [&](bool onAB, const Point& point) {
             auto areaFor = [&](const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
-                return largeMultiRingFeature
-                    ? polylineDisplacementAreaLoose(polyA, polyB)
-                    : polylineDisplacementArea(polyA, polyB);
+                return largeMultiRingFeature ? polylineDisplacementAreaLoose(polyA, polyB) : polylineDisplacementArea(polyA, polyB);
                 };
-            return onAB
-                ? areaFor({ B, C, D }, { B, point, D })
-                : areaFor({ A, B, C, point }, { A, point });
+            return onAB ? areaFor({ B, C, D }, { B, point, D }) : areaFor({ A, B, C, point }, { A, point });
             };
 
         if (!hasPrimary && hasSecondary) {
@@ -491,7 +546,12 @@ void Candidate::computePlacementAndDisplacement() {
         return true;
         };
 
+    // Alternate placement: places E by offsetting the midpoint M of BC perpendicular
+    // to AD by distance t, where t is chosen so area(A,E,D) == area(A,B,C,D).
+    // Used for interior rings with S-curve turns (sign1 != sign2) where the classic
+    // area-line intersection lands outside both AB and CD.
     auto computeAlternate = [&]() -> bool {
+        // Twice the signed area of quadrilateral A->B->C->D (shoelace)
         double s2 = (A.x * B.y - B.x * A.y) +
             (B.x * C.y - C.x * B.y) +
             (C.x * D.y - D.x * C.y) +
@@ -499,14 +559,16 @@ void Candidate::computePlacementAndDisplacement() {
 
         double adx = D.x - A.x;
         double ady = D.y - A.y;
-        double ad2 = adx * adx + ady * ady;
+        double ad2 = adx * adx + ady * ady; // squared length of AD
         if (ad2 < 1e-20) {
-            return false;
+            return false; // A and D are coincident
         }
 
+        // M = midpoint of BC; sm2 = twice the signed area of triangle A->M->D
         double mx = (B.x + C.x) * 0.5;
         double my = (B.y + C.y) * 0.5;
         double sm2 = (A.x * my - mx * A.y) + (mx * D.y - D.x * my) + (D.x * A.y - A.x * D.y);
+        // Solve for offset t: area(A, M + t*perp(AD), D) == area(A,B,C,D)
         double t = (sm2 - s2) / ad2;
         e = Point(mx - t * ady, my + t * adx);
         placedOnAB = false;
@@ -584,13 +646,8 @@ void Candidate::computePlacementAndDisplacement() {
 
     int sign1 = orientationSign(A, B, C);
     int sign2 = orientationSign(B, C, D);
-    bool largeSingleOuterRing =
-        a->ring_id == 0 &&
-        g_originalRingSizes.size() == 1 &&
-        !g_originalRingSizes.empty() &&
-        g_originalRingSizes[0] > 20;
-    bool useAlternate =
-        (a->ring_id > 0 && sign1 != 0 && sign2 != 0 && sign1 != sign2);
+    bool largeSingleOuterRing = a->ring_id == 0 && g_originalRingSizes.size() == 1 && !g_originalRingSizes.empty() &&  g_originalRingSizes[0] > 20;
+    bool useAlternate = (a->ring_id > 0 && sign1 != 0 && sign2 != 0 && sign1 != sign2);
     bool comparePlacementModes = false;
     if (largeSingleOuterRing) {
         if (g_largeSingleRingPlacementMode == 1) {
@@ -672,24 +729,30 @@ void Candidate::computePlacementAndDisplacement() {
     }
 }
 
+// Core simplification engine.
+// Maintains the polygon as a set of doubly-linked circular lists (one per ring).
+// Candidates are managed in a max-priority-queue ordered by displacement (min displacement = top).
+// After each collapse, only the affected neighbours are re-queued (incremental update).
 class PolygonSimplifier {
 private:
+    // Used by lookahead search to record a candidate together with its ring/index context.
     struct CandidateChoice {
         size_t ringId;
         size_t bIndex;
         Candidate candidate;
     };
 
-    std::vector<std::vector<std::shared_ptr<Node>>> rings;
-    std::vector<size_t> minRingVertices;
-    std::priority_queue<Candidate> pq;
-    std::unordered_map<size_t, std::set<size_t>> activeCandidates;
-    size_t totalVertices;
-    size_t targetVertices;
-    double originalTotalArea;
-    double cumulativeDisplacement;
-    bool debugLogging;
+    std::vector<std::vector<std::shared_ptr<Node>>> rings; // one vector of nodes per ring
+    std::vector<size_t> minRingVertices; // minimum vertices allowed per ring (3 or 4)
+    std::priority_queue<Candidate> pq;  // lazy-deletion min-heap (inverted via operator<)
+    std::unordered_map<size_t, std::set<size_t>> activeCandidates; // ring_id -> active b-indices
+    size_t totalVertices;        // current total across all rings
+    size_t targetVertices;       // stop when we reach this
+    double originalTotalArea;    // signed area of input polygon (for output reporting)
+    double cumulativeDisplacement; // running sum of displacement from all collapses so far
+    bool debugLogging;           // set via APSC_DEBUG env var
 
+    // Unused helper kept for reference; line intersection is handled by tryLineIntersection.
     Point findIntersection(const Point& A, const Point& D, const Point& linePoint, const Point& lineDir) {
         double denominator = (D - A).cross(lineDir);
         if (std::abs(denominator) < 1e-12) return A;
@@ -698,6 +761,8 @@ private:
         return A + (D - A) * t;
     }
 
+    // Traverses the linked list from the first active node, collecting all active nodes in order.
+    // O(n) per call — used both for output and for topology checks.
     std::vector<std::shared_ptr<Node>> collectActiveRing(const std::vector<std::shared_ptr<Node>>& ring) const {
         std::shared_ptr<Node> start = nullptr;
         for (const auto& node : ring) {
@@ -721,6 +786,9 @@ private:
         return activeRing;
     }
 
+    // Extracts the current active ring geometry as plain Point vectors.
+    // Used by the lookahead/exact-collapse search to create independent copies
+    // of the polygon state for recursive simulation.
     std::vector<std::vector<Point>> snapshotActiveRings() const {
         std::vector<std::vector<Point>> snapshot;
         snapshot.reserve(rings.size());
@@ -749,6 +817,8 @@ private:
         return snapshot;
     }
 
+    // Constructs a fresh Candidate from a ring's current active state.
+    // Used during lookahead to rebuild candidates after simulated collapses.
     Candidate makeCandidateFromActiveIndex(size_t ringId, size_t bIndex) const {
         auto activeRing = collectActiveRing(rings[ringId]);
         size_t n = activeRing.size();
@@ -935,16 +1005,17 @@ private:
         return bestChoice.candidate;
     }
 
+    // Topology check: returns true only if applying this collapse leaves all rings
+    // simple and non-intersecting. Checks every edge of every ring against the two
+    // new edges A->E and E->D, skipping the three edges A->B, B->C, C->D that are
+    // being replaced. Also rejects stale candidates (inactive nodes) and protected vertices.
     bool isValidCollapse(const Candidate& cand, bool logReason = false) {
         if (!cand.a->active || !cand.b->active || !cand.c->active || !cand.d->active)
-            return false;
+            return false; // stale candidate from lazy-deletion queue
         if (cand.b->protectedVertex || cand.c->protectedVertex)
-            return false;
+            return false; // vertex 0 of each ring must not be removed
 
-        bool singleLargeOuterRing =
-            rings.size() == 1 &&
-            !g_originalRingSizes.empty() &&
-            g_originalRingSizes[0] > 20;
+        bool singleLargeOuterRing = rings.size() == 1 && !g_originalRingSizes.empty() && g_originalRingSizes[0] > 20;
         if (singleLargeOuterRing && g_largeSingleRingProtectAdjacent &&
             (cand.a->protectedVertex || cand.d->protectedVertex)) {
             return false;
@@ -988,6 +1059,9 @@ private:
         return true;
     }
 
+    // Re-queues candidates for the two windows that overlap a given node:
+    //   (prev->prev, prev, node, next)  and  (prev, node, next, next->next)
+    // Called after every collapse on the three affected nodes: A, E (new), D.
     void updateNeighbors(std::shared_ptr<Node> node) {
         if (!node->active) return;
 
@@ -999,6 +1073,9 @@ private:
         }
     }
 
+    // Creates a Candidate and pushes it onto the priority queue.
+    // Stale candidates (pointing to deactivated nodes) are left in the queue
+    // and discarded lazily in the main loop when isValidCollapse returns false.
     void addCandidate(std::shared_ptr<Node> a, std::shared_ptr<Node> b,
         std::shared_ptr<Node> c, std::shared_ptr<Node> d) {
         if (!a->active || !b->active || !c->active || !d->active) return;
@@ -1011,24 +1088,30 @@ private:
         }
     }
 
+    // Executes one APSC collapse: removes B and C, inserts E between A and D.
+    // Updates the linked list pointers, marks B/C inactive, accumulates displacement,
+    // and re-queues candidates for the affected neighbourhood.
     void performCollapse(const Candidate& cand) {
         auto replacement = std::make_shared<Node>(cand.a->ring_id, 0, g_nextNodeOrder++, cand.e);
         replacement->protectedVertex = false;
+        // Relink: A <-> E <-> D
         cand.a->next = replacement;
         replacement->prev = cand.a;
         replacement->next = cand.d;
         cand.d->prev = replacement;
-        rings[cand.a->ring_id].push_back(replacement);
+        rings[cand.a->ring_id].push_back(replacement); // keep node alive via ring storage
 
         cand.b->active = false;
         cand.c->active = false;
         cumulativeDisplacement += cand.displacement;
 
+        // Incrementally update only the three affected windows
         updateNeighbors(cand.a);
         updateNeighbors(replacement);
         updateNeighbors(cand.d);
     }
 
+    // Returns the signed area of the ring's current active vertices.
     double computeRingArea(const std::vector<std::shared_ptr<Node>>& ring) {
         double area = 0.0;
         std::vector<Point> points;
@@ -1040,6 +1123,8 @@ private:
         return signedArea(points);
     }
 
+    // Returns the total signed area of the polygon: sum of signed areas across all rings.
+    // CCW exterior rings contribute positive area; CW interior rings contribute negative.
     double computeTotalArea() {
         double total = 0.0;
         for (size_t i = 0; i < rings.size(); i++) {
@@ -1163,14 +1248,8 @@ public:
         targetVertices = target;
 
         while (totalVertices > targetVertices && !pq.empty()) {
-            bool largeSingleRing =
-                rings.size() == 1 &&
-                !g_originalRingSizes.empty() &&
-                g_originalRingSizes[0] > 20;
-            bool largeMultiRing =
-                rings.size() > 1 &&
-                !g_originalRingSizes.empty() &&
-                g_originalRingSizes[0] > 50;
+            bool largeSingleRing = rings.size() == 1 && !g_originalRingSizes.empty() && g_originalRingSizes[0] > 20;
+            bool largeMultiRing = rings.size() > 1 && !g_originalRingSizes.empty() && g_originalRingSizes[0] > 50;
             if (allowLookahead && largeSingleRing && totalVertices <= targetVertices + 3 && totalVertices > targetVertices) {
                 auto choices = enumerateValidChoices();
                 if (!choices.empty()) {
@@ -1209,10 +1288,7 @@ public:
             if (allowLookahead && lookaheadDepth > 0 && rings.size() > 1 && totalVertices <= 30 && totalVertices > 25) {
                 auto choices = enumerateValidChoices();
                 if (!choices.empty()) {
-                    bool compactMultiRingFeature =
-                        rings.size() > 1 &&
-                        !g_inputRingSizes.empty() &&
-                        g_inputRingSizes[0] <= 25;
+                    bool compactMultiRingFeature = rings.size() > 1 && !g_inputRingSizes.empty() && g_inputRingSizes[0] <= 25;
                     int compactDepth = compactMultiRingFeature ? (rings.size() >= 4 ? 0 : 1) : lookaheadDepth;
                     if (compactDepth > 0) {
                         Candidate best = chooseLookaheadCollapse(compactDepth);
@@ -1387,10 +1463,7 @@ public:
 
             size_t activeSize = collectActiveRing(rings[best.a->ring_id]).size();
             activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-            bool largeMultiRingFeature =
-                rings.size() > 1 &&
-                !g_originalRingSizes.empty() &&
-                g_originalRingSizes[0] > 50;
+            bool largeMultiRingFeature = rings.size() > 1 && !g_originalRingSizes.empty() && g_originalRingSizes[0] > 50;
             if (best.a->ring_id > 0 && activeSize >= 7) {
                 auto activeRing = collectActiveRing(rings[best.a->ring_id]);
                 Candidate localBest = best;
@@ -1414,15 +1487,8 @@ public:
                 best = localBest;
             }
             activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-            bool compactBlobLikeFeature =
-                rings.size() == 3 &&
-                !g_inputRingSizes.empty() &&
-                g_inputRingSizes[0] >= 18 &&
-                g_inputRingSizes[0] <= 25;
-            bool compactManyHoleFeature =
-                rings.size() >= 4 &&
-                !g_inputRingSizes.empty() &&
-                g_inputRingSizes[0] <= 25;
+            bool compactBlobLikeFeature =rings.size() == 3 && !g_inputRingSizes.empty() && g_inputRingSizes[0] >= 18 && g_inputRingSizes[0] <= 25;
+            bool compactManyHoleFeature = rings.size() >= 4 && !g_inputRingSizes.empty() && g_inputRingSizes[0] <= 25;
             if (best.a->ring_id > 0 && activeSize == 6 && !largeMultiRingFeature) {
                 auto activeRing = collectActiveRing(rings[best.a->ring_id]);
                 bool sawPositive = false;
@@ -1479,11 +1545,7 @@ public:
                 }
             }
             activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-            bool allowFinalInnerTriangle =
-                best.a->ring_id > 0 &&
-                minRingVertices[best.a->ring_id] == 4 &&
-                activeSize == 4 &&
-                totalVertices == targetVertices + 1;
+            bool allowFinalInnerTriangle = best.a->ring_id > 0 && minRingVertices[best.a->ring_id] == 4 && activeSize == 4 && totalVertices == targetVertices + 1;
             if (debugLogging && best.a->ring_id == 1 && activeSize <= 7) {
                 auto dbgRing = collectActiveRing(rings[1]);
                 std::cerr << "pre-collapse ring=1 size=" << dbgRing.size();
@@ -1517,12 +1579,16 @@ public:
         cleanup();
     }
 
+    // Replaces each ring's raw node vector with only the active nodes in traversal order.
+    // Called once after simplification finishes, before outputResults.
     void cleanup() {
         for (auto& ring : rings) {
             ring = collectActiveRing(ring);
         }
     }
 
+    // Prints the simplified polygon to stdout in the required CSV format, followed by
+    // the three summary lines (total signed area in/out and total areal displacement).
     void outputResults() {
         std::cout << "ring_id,vertex_id,x,y\n";
 
@@ -1545,6 +1611,8 @@ public:
 
 };
 
+// Reads the input CSV (ring_id, vertex_id, x, y) and returns one vector of Points per ring,
+// sorted by vertex_id within each ring. Skips the header line.
 std::vector<std::vector<Point>> readInput(const std::string& filename) {
     std::ifstream file(filename);
     std::vector<std::vector<Point>> rings;
@@ -1595,6 +1663,10 @@ std::vector<std::vector<Point>> readInput(const std::string& filename) {
     return rings;
 }
 
+// Formats a coordinate with up to 10 significant digits, stripping trailing zeros.
+// Uses up to 10-k decimal places where k is the number of digits before the decimal point,
+// so small numbers get more decimal places and large ones get fewer.
+// Near-zero values (|v| < 5e-11) are snapped to 0 to avoid printing "-0" or tiny noise.
 std::string formatCoordinate(double value) {
     if (std::abs(value) < 5e-11) {
         value = 0.0;
@@ -1611,6 +1683,7 @@ std::string formatCoordinate(double value) {
     oss << std::fixed << std::setprecision(decimals) << value;
     std::string text = oss.str();
 
+    // Strip trailing zeros and a lonely decimal point
     while (!text.empty() && text.back() == '0') {
         text.pop_back();
     }
