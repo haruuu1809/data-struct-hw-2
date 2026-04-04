@@ -179,18 +179,6 @@ bool getIntersection(const Point& a1, const Point& a2, const Point& b1, const Po
     return false;
 }
 
-/***** @brief Computes the intersection point of two infinite lines. *****/
-Point lineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2) {
-    Point r = p2 - p1;
-    Point s = q2 - q1;
-    double denom = r.cross(s);
-    if (std::abs(denom) < 1e-12) {
-        return p1;
-    }
-    double t = (q1 - p1).cross(s) / denom;
-    return p1 + r * t;
-}
-
 /***** @brief Safely computes the intersection point of two infinite lines. *****/
 bool tryLineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2, Point& out) {
     Point r = p2 - p1;
@@ -319,7 +307,7 @@ void Candidate::computeE() {
     bool hasPrimary = placedOnAB ? chooseIntersection(A, B, A, primary) : chooseIntersection(C, D, D, primary);
     bool hasSecondary = placedOnAB ? chooseIntersection(C, D, D, secondary) : chooseIntersection(A, B, A, secondary);
 
-    auto displacementFor = [&](bool onAB, const Point& point) {
+    auto calcDisp = [&](bool onAB, const Point& point) {
         return onAB ? calcArea({ B, C, D }, { B, point, D }) : calcArea({ A, B, C, point }, { A, point });
     };
 
@@ -336,7 +324,7 @@ void Candidate::computeE() {
         return;
     }
 
-    displacement = displacementFor(placedOnAB, e);
+    displacement = calcDisp(placedOnAB, e);
 }
 
 class PolygonSimplifier {
