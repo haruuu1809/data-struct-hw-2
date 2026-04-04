@@ -351,23 +351,28 @@ private:
 
     /***** @brief Collects the active nodes of one ring in traversal order. *****/
     std::vector<std::shared_ptr<Node>> collectActiveRing(const std::vector<std::shared_ptr<Node>>& ring) const {
+        // find a starting node that is still active
         std::shared_ptr<Node> start = nullptr;
         for (const auto& node : ring) {
             if (node->active) {
-                start = node;
+                start = node;   // first active node found
                 break;
             }
         }
 
+        // if no active nodes exist, return empty list
         if (!start) return {};
 
+
         std::vector<std::shared_ptr<Node>> activeRing;
+        // traverse the circular linked list starting from 'start'
         std::shared_ptr<Node> current = start;
         do {
-            activeRing.push_back(current);
-            current = current->next;
-        } while (current && current != start);
+            activeRing.push_back(current);   // add current active node to result
+            current = current->next;         // move to next node in the ring
+        } while (current && current != start); // stop when we loop back to start
 
+        // return all active nodes in correct order
         return activeRing;
     }
 
@@ -377,12 +382,18 @@ private:
         const std::shared_ptr<Node>& c,
         const std::shared_ptr<Node>& d) {
         if (!a || !b || !c || !d) return;
+        // all nodes must still be active (not already removed)
         if (!a->active || !b->active || !c->active || !d->active) return;
+
+        // ensure these nodes are actually consecutive in the ring (A -> B -> C -> D)
         if (a->next != b || b->next != c || c->next != d) return;
 
+        // build a candidate collapse using these 4 nodes
         Candidate candidate(a, b, c, d);
+
+        // only add it if displacement is valid (not infinity / invalid case)
         if (std::isfinite(candidate.displacement)) {
-            pq.push(candidate);
+            pq.push(candidate); // push into priority queue (min displacement preferred)
         }
     }
 
@@ -400,36 +411,52 @@ private:
 
     /***** @brief Verifies that a collapse keeps all rings topologically valid. *****/
     bool isValidCollapse(const Candidate& candidate) const {
+        // all 4 nodes must still be active
         if (!candidate.a->active || !candidate.b->active || !candidate.c->active || !candidate.d->active) {
             return false;
         }
+
+        // do not allow removing protected vertices
         if (candidate.b->protectedVertex || candidate.c->protectedVertex) {
             return false;
         }
+
+        // make sure nodes are still consecutive: A -> B -> C -> D
+        // if not, the candidate is outdated
         if (candidate.a->next != candidate.b || candidate.b->next != candidate.c || candidate.c->next != candidate.d) {
             return false;
         }
 
+        // check against all rings to make sure new edges don't intersect anything
         for (const auto& ring : rings) {
+
+            // get current active nodes in correct order
             auto activeRing = collectActiveRing(ring);
+
+            // go through each edge in the ring
             for (size_t i = 0; i < activeRing.size(); ++i) {
+
                 auto current = activeRing[i];
                 auto next = activeRing[(i + 1) % activeRing.size()];
 
+                // these 3 edges will be removed anyway
                 bool isAB = current == candidate.a && next == candidate.b;
                 bool isBC = current == candidate.b && next == candidate.c;
                 bool isCD = current == candidate.c && next == candidate.d;
+
                 if (isAB || isBC || isCD) {
-                    continue; // Ignore the three edges that will be replaced by the collapse.
+                    continue;
                 }
 
+                // check if new edges (A -> E) or (E -> D) intersect this edge
+                // if yes, the collapse would break polygon (invalid)
                 if (segmentsProperlyIntersect(current->p, next->p, candidate.a->p, candidate.e) ||
                     segmentsProperlyIntersect(current->p, next->p, candidate.e, candidate.d->p)) {
                     return false;
                 }
             }
         }
-
+        // if all checks pass, collapse is safe
         return true;
     }
 
@@ -458,14 +485,19 @@ private:
 
     /***** @brief Computes the signed area of one active ring. *****/
     double computeRingArea(const std::vector<std::shared_ptr<Node>>& ring) const {
+        // get only the active nodes
         auto activeRing = collectActiveRing(ring);
+
+        // need at least 3 points to form a polygon
         if (activeRing.size() < 3) return 0.0;
 
+        // convert nodes to points
         std::vector<Point> points;
         points.reserve(activeRing.size());
         for (const auto& node : activeRing) {
-            points.push_back(node->p);
+            points.push_back(node->p); // coordinates
         }
+        // compute signed area using shoelace formula
         return signedArea(points);
     }
 
@@ -480,37 +512,56 @@ private:
 
 public:
     /***** @brief Builds the simplifier state from the input rings and seeds the candidate queue. *****/
+   // constructor: builds all rings and prepares initial candidates
     explicit PolygonSimplifier(const std::vector<std::vector<Point>>& inputRings)
         : totalVertices(0), targetVertices(0), originalTotalArea(0.0), cumulativeDisplacement(0.0) {
+
+        // loop through each ring (outer boundary + holes)
         for (size_t ringId = 0; ringId < inputRings.size(); ++ringId) {
+
             const auto& inputRing = inputRings[ringId];
             std::vector<std::shared_ptr<Node>> ring;
             ring.reserve(inputRing.size());
 
-            minRingVertices.push_back(inputRing.size() >= 4 ? 4 : 3); // Keep at least a triangle, or a 4-vertex hole.
+            // set minimum allowed vertices for this ring
+            // outer ring can go to triangle (3), holes keep at least 4
+            minRingVertices.push_back(inputRing.size() >= 4 ? 4 : 3);
 
+            // create nodes for each vertex in this ring
             for (size_t vertexId = 0; vertexId < inputRing.size(); ++vertexId) {
                 ring.push_back(std::make_shared<Node>(ringId, vertexId, inputRing[vertexId]));
-                ++totalVertices;
+                ++totalVertices; // count total vertices across all rings
             }
 
+            // link nodes into a circular doubly linked list
             for (size_t i = 0; i < ring.size(); ++i) {
-                ring[i]->prev = ring[(i + ring.size() - 1) % ring.size()]; // Circular previous pointer.
-                ring[i]->next = ring[(i + 1) % ring.size()]; // Circular next pointer.
+                // previous node (wrap around using modulo)
+                ring[i]->prev = ring[(i + ring.size() - 1) % ring.size()];
+
+                // next node (wrap around)
+                ring[i]->next = ring[(i + 1) % ring.size()];
             }
 
+            // store this ring
             rings.push_back(ring);
         }
 
+        // compute initial total area before simplification
         originalTotalArea = computeTotalArea();
 
+        // each candidate uses 4 consecutive nodes (A, B, C, D)
         for (size_t ringId = 0; ringId < rings.size(); ++ringId) {
             const auto& ring = rings[ringId];
+
             for (size_t i = 0; i < ring.size(); ++i) {
-                addCandidate(ring[(i + ring.size() - 2) % ring.size()],
-                    ring[(i + ring.size() - 1) % ring.size()],
-                    ring[i],
-                    ring[(i + 1) % ring.size()]);
+
+                // pick 4 consecutive nodes using circular indexing
+                addCandidate(
+                    ring[(i + ring.size() - 2) % ring.size()], // A
+                    ring[(i + ring.size() - 1) % ring.size()], // B
+                    ring[i],                                   // C
+                    ring[(i + 1) % ring.size()]                // D
+                );
             }
         }
     }
