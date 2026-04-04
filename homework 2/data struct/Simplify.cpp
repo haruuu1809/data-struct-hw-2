@@ -12,6 +12,10 @@
 //
 // Usage: ./simplify <input_file.csv> <target_vertices>
 
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -22,13 +26,10 @@
 #include <memory>
 #include <algorithm>
 #include <queue>
-#include <set>
 #include <unordered_map>
 #include <iomanip>
-#include <sstream>
 #include <cstdlib>
 
-// 2D point with common geometric helpers.
 struct Point {
     double x, y;
 
@@ -78,21 +79,10 @@ struct Point {
     }
 };
 
-struct Vertex {
-    Point p;
-    size_t ring_id;
-    size_t vertex_id;
-    std::shared_ptr<struct Node> node;
-};
+static std::vector<size_t> g_originalRingSizes;
+static std::vector<size_t> g_inputRingSizes;
+static size_t g_nextNodeOrder = 0;
 
-// --- Global state ---
-// Ring sizes are stored globally so Candidate::operator< can access them
-// without carrying extra context through every priority queue comparison.
-static std::vector<size_t> g_originalRingSizes; // sizes at construction time
-static std::vector<size_t> g_inputRingSizes;     // sizes read from CSV (main only)
-static size_t g_nextNodeOrder = 0;               // monotonically increasing insertion counter
-
-// Tie-breaking knobs for large single-ring polygons (tunable via env vars).
 static double g_largeSingleRingTieEps = 30000.0;
 static bool g_largeSingleRingPreferDescending = true;
 static int g_largeSingleRingTieMode = 0;
@@ -103,9 +93,37 @@ static double g_largeSingleRingCompareEps = 1e-9;
 static bool g_largeSingleRingPreferAlternateOnCompareTie = false;
 static bool g_largeSingleRingProtectAdjacent = false;
 
+namespace {
+bool isEnabled(const char* value) {
+    return value != nullptr &&
+        std::string(value) != "0" &&
+        std::string(value) != "false" &&
+        std::string(value) != "False";
+}
 
-static const char* getEnvValue(const char* name) {
-    return std::getenv(name);
+void loadDoubleEnv(const char* name, double& target) {
+    const char* value = std::getenv(name);
+    if (!value) {
+        return;
+    }
+    try {
+        target = std::stod(value);
+    }
+    catch (...) {
+    }
+}
+
+void loadIntEnv(const char* name, int& target) {
+    const char* value = std::getenv(name);
+    if (!value) {
+        return;
+    }
+    try {
+        target = std::stoi(value);
+    }
+    catch (...) {
+    }
+}
 }
 
 // A vertex in a doubly-linked circular ring list.
@@ -746,20 +764,25 @@ private:
     std::vector<std::vector<std::shared_ptr<Node>>> rings; // one vector of nodes per ring
     std::vector<size_t> minRingVertices; // minimum vertices allowed per ring (3 or 4)
     std::priority_queue<Candidate> pq;  // lazy-deletion min-heap (inverted via operator<)
-    std::unordered_map<size_t, std::set<size_t>> activeCandidates; // ring_id -> active b-indices
     size_t totalVertices;        // current total across all rings
     size_t targetVertices;       // stop when we reach this
     double originalTotalArea;    // signed area of input polygon (for output reporting)
     double cumulativeDisplacement; // running sum of displacement from all collapses so far
     bool debugLogging;           // set via APSC_DEBUG env var
 
-    // Unused helper kept for reference; line intersection is handled by tryLineIntersection.
-    Point findIntersection(const Point& A, const Point& D, const Point& linePoint, const Point& lineDir) {
-        double denominator = (D - A).cross(lineDir);
-        if (std::abs(denominator) < 1e-12) return A;
+    void debug(const std::string& message) const {
+        if (debugLogging) {
+            std::cerr << message << "\n";
+        }
+    }
 
-        double t = ((linePoint - A).cross(lineDir)) / denominator;
-        return A + (D - A) * t;
+    void debugRingState(size_t ringId, const std::vector<std::shared_ptr<Node>>& activeRing) const {
+        std::ostringstream out;
+        out << "ring-state ring=" << ringId << " size=" << activeRing.size();
+        for (const auto& node : activeRing) {
+            out << " (" << node->p.x << "," << node->p.y << ")";
+        }
+        debug(out.str());
     }
 
     // Traverses the linked list from the first active node, collecting all active nodes in order.
@@ -1045,12 +1068,14 @@ private:
                 if (segmentsProperlyIntersect(curr->p, next->p, cand.a->p, cand.e) ||
                     segmentsProperlyIntersect(curr->p, next->p, cand.e, cand.d->p)) {
                     if (logReason) {
-                        std::cerr << "invalid-by-edge edge=(" << curr->p.x << "," << curr->p.y << ")->("
+                        std::ostringstream out;
+                        out << "invalid-by-edge edge=(" << curr->p.x << "," << curr->p.y << ")->("
                             << next->p.x << "," << next->p.y << ")"
                             << " against=(" << cand.a->p.x << "," << cand.a->p.y << ")->("
                             << cand.e.x << "," << cand.e.y << ")"
                             << " and=(" << cand.e.x << "," << cand.e.y << ")->("
-                            << cand.d->p.x << "," << cand.d->p.y << ")\n";
+                            << cand.d->p.x << "," << cand.d->p.y << ")";
+                        debug(out.str());
                     }
                     return false;
                 }
@@ -1085,7 +1110,6 @@ private:
         Candidate cand(a, b, c, d);
         if (cand.displacement >= 0) {
             pq.push(cand);
-            activeCandidates[b->ring_id].insert(b->idx);
         }
     }
 
@@ -1114,7 +1138,6 @@ private:
 
     // Returns the signed area of the ring's current active vertices.
     double computeRingArea(const std::vector<std::shared_ptr<Node>>& ring) {
-        double area = 0.0;
         std::vector<Point> points;
         auto activeRing = collectActiveRing(ring);
         for (const auto& node : activeRing) {
@@ -1151,67 +1174,25 @@ public:
         g_largeSingleRingCompareEps = 1e-9;
         g_largeSingleRingPreferAlternateOnCompareTie = false;
         g_largeSingleRingProtectAdjacent = false;
-        const char* debugValue = getEnvValue("APSC_DEBUG");
-        debugLogging = (debugValue != nullptr);
-        const char* tieValue = getEnvValue("APSC_TIE_EPS");
-        if (tieValue != nullptr) {
-            try {
-                g_largeSingleRingTieEps = std::stod(tieValue);
-            }
-            catch (...) {
-            }
+        debugLogging = std::getenv("APSC_DEBUG") != nullptr;
+        loadDoubleEnv("APSC_TIE_EPS", g_largeSingleRingTieEps);
+        if (const char* tieDirValue = std::getenv("APSC_TIE_DESC")) {
+            g_largeSingleRingPreferDescending = isEnabled(tieDirValue);
         }
-        const char* tieDirValue = getEnvValue("APSC_TIE_DESC");
-        if (tieDirValue != nullptr) {
-            std::string dir(tieDirValue);
-            g_largeSingleRingPreferDescending = !(dir == "0" || dir == "false" || dir == "False");
+        loadIntEnv("APSC_TIE_MODE", g_largeSingleRingTieMode);
+        if (const char* skipTopoValue = std::getenv("APSC_SKIP_TOPO")) {
+            g_largeSingleRingSkipTopo = isEnabled(skipTopoValue);
         }
-        else {
-            g_largeSingleRingPreferDescending = true;
+        if (const char* sideRuleValue = std::getenv("APSC_CLOSER_SIDE")) {
+            g_largeSingleRingUseCloserSideRule = isEnabled(sideRuleValue);
         }
-        const char* tieModeValue = getEnvValue("APSC_TIE_MODE");
-        if (tieModeValue != nullptr) {
-            try {
-                g_largeSingleRingTieMode = std::stoi(tieModeValue);
-            }
-            catch (...) {
-            }
+        loadIntEnv("APSC_LARGE_MODE", g_largeSingleRingPlacementMode);
+        loadDoubleEnv("APSC_COMPARE_EPS", g_largeSingleRingCompareEps);
+        if (const char* compareTieValue = std::getenv("APSC_COMPARE_ALT")) {
+            g_largeSingleRingPreferAlternateOnCompareTie = isEnabled(compareTieValue);
         }
-        const char* skipTopoValue = getEnvValue("APSC_SKIP_TOPO");
-        if (skipTopoValue != nullptr) {
-            std::string skip(skipTopoValue);
-            g_largeSingleRingSkipTopo = !(skip == "0" || skip == "false" || skip == "False");
-        }
-        const char* sideRuleValue = getEnvValue("APSC_CLOSER_SIDE");
-        if (sideRuleValue != nullptr) {
-            std::string side(sideRuleValue);
-            g_largeSingleRingUseCloserSideRule = !(side == "0" || side == "false" || side == "False");
-        }
-        const char* placementModeValue = getEnvValue("APSC_LARGE_MODE");
-        if (placementModeValue != nullptr) {
-            try {
-                g_largeSingleRingPlacementMode = std::stoi(placementModeValue);
-            }
-            catch (...) {
-            }
-        }
-        const char* compareEpsValue = getEnvValue("APSC_COMPARE_EPS");
-        if (compareEpsValue != nullptr) {
-            try {
-                g_largeSingleRingCompareEps = std::stod(compareEpsValue);
-            }
-            catch (...) {
-            }
-        }
-        const char* compareTieValue = getEnvValue("APSC_COMPARE_ALT");
-        if (compareTieValue != nullptr) {
-            std::string alt(compareTieValue);
-            g_largeSingleRingPreferAlternateOnCompareTie = !(alt == "0" || alt == "false" || alt == "False");
-        }
-        const char* protectAdjacentValue = getEnvValue("APSC_PROTECT_ADJ");
-        if (protectAdjacentValue != nullptr) {
-            std::string protect(protectAdjacentValue);
-            g_largeSingleRingProtectAdjacent = !(protect == "0" || protect == "false" || protect == "False");
+        if (const char* protectAdjacentValue = std::getenv("APSC_PROTECT_ADJ")) {
+            g_largeSingleRingProtectAdjacent = isEnabled(protectAdjacentValue);
         }
         g_originalRingSizes.clear();
         g_nextNodeOrder = 0;
@@ -1257,11 +1238,14 @@ public:
                     Candidate best = chooseExactCollapse(500);
                     if (debugLogging) {
                         size_t activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-                        std::cerr << "single-ring-exact-collapse ring=" << best.a->ring_id
+                        std::ostringstream out;
+                        out << std::fixed << std::setprecision(6)
+                            << "single-ring-exact-collapse ring=" << best.a->ring_id
                             << " active=" << activeSize
-                            << " disp=" << std::fixed << std::setprecision(6) << best.displacement
+                            << " disp=" << best.displacement
                             << " e=(" << best.e.x << "," << best.e.y << ")"
-                            << " totalBefore=" << totalVertices << "\n";
+                            << " totalBefore=" << totalVertices;
+                        debug(out.str());
                     }
                     performCollapse(best);
                     totalVertices--;
@@ -1274,11 +1258,14 @@ public:
                     Candidate best = chooseExactCollapse(100000);
                     if (debugLogging) {
                         size_t activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-                        std::cerr << "exact-collapse ring=" << best.a->ring_id
+                        std::ostringstream out;
+                        out << std::fixed << std::setprecision(6)
+                            << "exact-collapse ring=" << best.a->ring_id
                             << " active=" << activeSize
-                            << " disp=" << std::fixed << std::setprecision(6) << best.displacement
+                            << " disp=" << best.displacement
                             << " e=(" << best.e.x << "," << best.e.y << ")"
-                            << " totalBefore=" << totalVertices << "\n";
+                            << " totalBefore=" << totalVertices;
+                        debug(out.str());
                     }
                     performCollapse(best);
                     totalVertices--;
@@ -1295,11 +1282,14 @@ public:
                         Candidate best = chooseLookaheadCollapse(compactDepth);
                         if (debugLogging) {
                             size_t activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-                            std::cerr << "lookahead-collapse ring=" << best.a->ring_id
+                            std::ostringstream out;
+                            out << std::fixed << std::setprecision(6)
+                                << "lookahead-collapse ring=" << best.a->ring_id
                                 << " active=" << activeSize
-                                << " disp=" << std::fixed << std::setprecision(6) << best.displacement
+                                << " disp=" << best.displacement
                                 << " e=(" << best.e.x << "," << best.e.y << ")"
-                                << " totalBefore=" << totalVertices << "\n";
+                                << " totalBefore=" << totalVertices;
+                            debug(out.str());
                         }
                         performCollapse(best);
                         totalVertices--;
@@ -1321,12 +1311,15 @@ public:
                             activeRing[i],
                             activeRing[(i + 1) % activeRing.size()],
                             activeRing[(i + 2) % activeRing.size()]);
-                        std::cerr << "final-probe ring=" << ringId
+                        std::ostringstream out;
+                        out << std::fixed << std::setprecision(6)
+                            << "final-probe ring=" << ringId
                             << " i=" << i
-                            << " disp=" << std::fixed << std::setprecision(6) << probe.displacement
+                            << " disp=" << probe.displacement
                             << " valid=" << (isValidCollapse(probe) ? 1 : 0)
                             << " protectedBC=" << (probe.b->protectedVertex ? 1 : 0) << "," << (probe.c->protectedVertex ? 1 : 0)
-                            << " e=(" << probe.e.x << "," << probe.e.y << ")\n";
+                            << " e=(" << probe.e.x << "," << probe.e.y << ")";
+                        debug(out.str());
                         if (isValidCollapse(probe) &&
                             (!bestFinalInnerTriangle || probe.displacement < bestFinalInnerTriangle->displacement)) {
                             bestFinalInnerTriangle = std::make_unique<Candidate>(probe);
@@ -1340,22 +1333,21 @@ public:
                     if (activeRing.size() != 5) {
                         continue;
                     }
-                    std::cerr << "ring-state ring=" << ringId << " size=5";
-                    for (const auto& node : activeRing) {
-                        std::cerr << " (" << node->p.x << "," << node->p.y << ")";
-                    }
-                    std::cerr << "\n";
+                    debugRingState(ringId, activeRing);
                     for (size_t i = 0; i < activeRing.size(); ++i) {
                         Candidate probe(
                             activeRing[(i + activeRing.size() - 1) % activeRing.size()],
                             activeRing[i],
                             activeRing[(i + 1) % activeRing.size()],
                             activeRing[(i + 2) % activeRing.size()]);
-                        std::cerr << "five-probe ring=" << ringId
+                        std::ostringstream out;
+                        out << std::fixed << std::setprecision(6)
+                            << "five-probe ring=" << ringId
                             << " i=" << i
-                            << " disp=" << std::fixed << std::setprecision(6) << probe.displacement
+                            << " disp=" << probe.displacement
                             << " valid=" << (isValidCollapse(probe) ? 1 : 0)
-                            << " e=(" << probe.e.x << "," << probe.e.y << ")\n";
+                            << " e=(" << probe.e.x << "," << probe.e.y << ")";
+                        debug(out.str());
                     }
                 }
             }
@@ -1365,22 +1357,21 @@ public:
                     if (activeRing.size() != 6) {
                         continue;
                     }
-                    std::cerr << "ring-state ring=" << ringId << " size=6";
-                    for (const auto& node : activeRing) {
-                        std::cerr << " (" << node->p.x << "," << node->p.y << ")";
-                    }
-                    std::cerr << "\n";
+                    debugRingState(ringId, activeRing);
                     for (size_t i = 0; i < activeRing.size(); ++i) {
                         Candidate probe(
                             activeRing[(i + activeRing.size() - 1) % activeRing.size()],
                             activeRing[i],
                             activeRing[(i + 1) % activeRing.size()],
                             activeRing[(i + 2) % activeRing.size()]);
-                        std::cerr << "six-probe ring=" << ringId
+                        std::ostringstream out;
+                        out << std::fixed << std::setprecision(6)
+                            << "six-probe ring=" << ringId
                             << " i=" << i
-                            << " disp=" << std::fixed << std::setprecision(6) << probe.displacement
+                            << " disp=" << probe.displacement
                             << " valid=" << (isValidCollapse(probe) ? 1 : 0)
-                            << " e=(" << probe.e.x << "," << probe.e.y << ")\n";
+                            << " e=(" << probe.e.x << "," << probe.e.y << ")";
+                        debug(out.str());
                     }
                 }
             }
@@ -1390,11 +1381,7 @@ public:
                     if (activeRing.size() != 7) {
                         continue;
                     }
-                    std::cerr << "ring-state ring=" << ringId << " size=7";
-                    for (const auto& node : activeRing) {
-                        std::cerr << " (" << node->p.x << "," << node->p.y << ")";
-                    }
-                    std::cerr << "\n";
+                    debugRingState(ringId, activeRing);
                     for (size_t i = 0; i < activeRing.size(); ++i) {
                         Candidate probe(
                             activeRing[(i + activeRing.size() - 1) % activeRing.size()],
@@ -1402,11 +1389,14 @@ public:
                             activeRing[(i + 1) % activeRing.size()],
                             activeRing[(i + 2) % activeRing.size()]);
                         bool valid = isValidCollapse(probe, ringId == 1 && i == 2);
-                        std::cerr << "seven-probe ring=" << ringId
+                        std::ostringstream out;
+                        out << std::fixed << std::setprecision(6)
+                            << "seven-probe ring=" << ringId
                             << " i=" << i
-                            << " disp=" << std::fixed << std::setprecision(6) << probe.displacement
+                            << " disp=" << probe.displacement
                             << " valid=" << (valid ? 1 : 0)
-                            << " e=(" << probe.e.x << "," << probe.e.y << ")\n";
+                            << " e=(" << probe.e.x << "," << probe.e.y << ")";
+                        debug(out.str());
                     }
                 }
             }
@@ -1488,7 +1478,6 @@ public:
                 best = localBest;
             }
             activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-            bool compactBlobLikeFeature =rings.size() == 3 && !g_inputRingSizes.empty() && g_inputRingSizes[0] >= 18 && g_inputRingSizes[0] <= 25;
             bool compactManyHoleFeature = rings.size() >= 4 && !g_inputRingSizes.empty() && g_inputRingSizes[0] <= 25;
             if (best.a->ring_id > 0 && activeSize == 6 && !largeMultiRingFeature) {
                 auto activeRing = collectActiveRing(rings[best.a->ring_id]);
@@ -1546,32 +1535,40 @@ public:
                 }
             }
             activeSize = collectActiveRing(rings[best.a->ring_id]).size();
-            bool allowFinalInnerTriangle = best.a->ring_id > 0 && minRingVertices[best.a->ring_id] == 4 && activeSize == 4 && totalVertices == targetVertices + 1;
             if (debugLogging && best.a->ring_id == 1 && activeSize <= 7) {
                 auto dbgRing = collectActiveRing(rings[1]);
-                std::cerr << "pre-collapse ring=1 size=" << dbgRing.size();
-                for (const auto& node : dbgRing) {
-                    std::cerr << " (" << node->p.x << "," << node->p.y << ")";
+                {
+                    std::ostringstream out;
+                    out << "pre-collapse ring=1 size=" << dbgRing.size();
+                    for (const auto& node : dbgRing) {
+                        out << " (" << node->p.x << "," << node->p.y << ")";
+                    }
+                    debug(out.str());
                 }
-                std::cerr << "\n";
                 for (size_t i = 0; i < dbgRing.size(); ++i) {
                     Candidate probe(
                         dbgRing[(i + dbgRing.size() - 1) % dbgRing.size()],
                         dbgRing[i],
                         dbgRing[(i + 1) % dbgRing.size()],
                         dbgRing[(i + 2) % dbgRing.size()]);
-                    std::cerr << "probe ring=1 i=" << i
-                        << " disp=" << std::fixed << std::setprecision(6) << probe.displacement
+                    std::ostringstream out;
+                    out << std::fixed << std::setprecision(6)
+                        << "probe ring=1 i=" << i
+                        << " disp=" << probe.displacement
                         << " valid=" << (isValidCollapse(probe) ? 1 : 0)
-                        << " e=(" << probe.e.x << "," << probe.e.y << ")\n";
+                        << " e=(" << probe.e.x << "," << probe.e.y << ")";
+                    debug(out.str());
                 }
             }
             if (debugLogging) {
-                std::cerr << "collapse ring=" << best.a->ring_id
+                std::ostringstream out;
+                out << std::fixed << std::setprecision(6)
+                    << "collapse ring=" << best.a->ring_id
                     << " active=" << activeSize
-                    << " disp=" << std::fixed << std::setprecision(6) << best.displacement
+                    << " disp=" << best.displacement
                     << " e=(" << best.e.x << "," << best.e.y << ")"
-                    << " totalBefore=" << totalVertices << "\n";
+                    << " totalBefore=" << totalVertices;
+                debug(out.str());
             }
             performCollapse(best);
             totalVertices--;
