@@ -33,44 +33,68 @@
 struct Point {
     double x, y;
 
+    /** @brief Constructs a point at the origin. */
     Point() : x(0), y(0) {}
+    /** @brief Constructs a point from explicit x/y coordinates. */
     Point(double x_, double y_) : x(x_), y(y_) {}
 
+    /** @brief Adds two points component-wise. */
     Point operator+(const Point& other) const 
         { return Point(x + other.x, y + other.y); }
 
+    /** @brief Subtracts another point component-wise. */
     Point operator-(const Point& other) const 
         { return Point(x - other.x, y - other.y); }
 
+    /** @brief Scales this point by a scalar factor. */
     Point operator*(double scalar) const 
         { return Point(x * scalar, y * scalar); }
 
+    /** @brief Divides this point by a scalar factor. */
     Point operator/(double scalar) const 
         { return Point(x / scalar, y / scalar); }
 
 
-    // 2D cross product (z-component of 3D cross product): positive = CCW turn.
+    /** @brief Returns the 2D cross product magnitude against another vector. */
     double cross(const Point& other) const 
         { return x * other.y - y * other.x; }
 
+    /** @brief Returns the dot product against another vector. */
     double dot(const Point& other) const 
         { return x * other.x + y * other.y; }
 
+    /** @brief Returns the Euclidean length of this vector. */
     double length() const 
         { return std::sqrt(x * x + y * y); }
 
+    /**
+     * @brief Compares two points with an epsilon tolerance.
+     * @param other Point to compare against.
+     * @param eps Maximum per-coordinate difference allowed.
+     * @return True when both coordinates are within the tolerance.
+     */
     bool nearlyEquals(const Point& other, double eps = 1e-9) const {
         return std::abs(x - other.x) <= eps && std::abs(y - other.y) <= eps;
     }
 
-    // Perpendicular distance from this point to the infinite line through a and b.
+    /**
+     * @brief Computes the perpendicular distance from this point to the infinite line through a and b.
+     * @param a First point on the reference line.
+     * @param b Second point on the reference line.
+     * @return Perpendicular distance to the line.
+     */
     double distanceToLine(const Point& a, const Point& b) const {
         Point ab = b - a;
         Point ap = *this - a;
         return std::abs(ab.cross(ap)) / ab.length();
     }
 
-    // Returns +1 if this point is left of a->b, -1 if right, 0 if collinear.
+    /**
+     * @brief Classifies this point relative to the directed line a->b.
+     * @param a Start of the directed line.
+     * @param b End of the directed line.
+     * @return +1 for left, -1 for right, and 0 for collinear.
+     */
     int side(const Point& a, const Point& b) const {
         double cross = (b - a).cross(*this - a);
         if (cross > 1e-9) return 1;
@@ -94,6 +118,11 @@ static bool g_largeSingleRingPreferAlternateOnCompareTie = false;
 static bool g_largeSingleRingProtectAdjacent = false;
 
 namespace {
+/**
+ * @brief Interprets an environment-variable string as a boolean enable flag.
+ * @param value Raw environment-variable value.
+ * @return True for non-null values other than "0" and "false".
+ */
 bool isEnabled(const char* value) {
     return value != nullptr &&
         std::string(value) != "0" &&
@@ -101,6 +130,11 @@ bool isEnabled(const char* value) {
         std::string(value) != "False";
 }
 
+/**
+ * @brief Loads a floating-point configuration value from an environment variable.
+ * @param name Environment-variable name.
+ * @param target Output variable updated on successful parsing.
+ */
 void loadDoubleEnv(const char* name, double& target) {
     const char* value = std::getenv(name);
     if (!value) {
@@ -113,6 +147,11 @@ void loadDoubleEnv(const char* name, double& target) {
     }
 }
 
+/**
+ * @brief Loads an integer configuration value from an environment variable.
+ * @param name Environment-variable name.
+ * @param target Output variable updated on successful parsing.
+ */
 void loadIntEnv(const char* name, int& target) {
     const char* value = std::getenv(name);
     if (!value) {
@@ -159,8 +198,11 @@ struct Candidate {
         computePlacementAndDisplacement();
     }
 
-    // Priority queue comparator: lower displacement = higher priority (min-heap via max-heap inversion).
-    // Tie-breaking uses node insertion order or geometry depending on the input shape type.
+    /**
+     * @brief Orders candidates so the priority queue prefers the smallest displacement.
+     * @param other Candidate to compare against.
+     * @return True when this candidate should appear after the other in the priority queue.
+     */
     bool operator<(const Candidate& other) const {
         bool singleLargeOuterRing =
             b->ring_id == 0 &&
@@ -247,6 +289,7 @@ struct Candidate {
         return e.x < other.e.x;
     }
 
+    /** @brief Computes the replacement point E and the associated areal displacement. */
     void computePlacementAndDisplacement();
 };
 
@@ -255,8 +298,11 @@ bool onSegment(const Point& p, const Point& q, const Point& r);
 Point lineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2);
 std::string formatCoordinate(double value);
 
-// Signed area of a closed polygon using the shoelace formula.
-// Positive for CCW orientation, negative for CW.
+/**
+ * @brief Computes the signed area of a polygon using the shoelace formula.
+ * @param poly Polygon vertices in traversal order.
+ * @return Positive area for CCW order and negative area for CW order.
+ */
 double signedArea(const std::vector<Point>& poly) {
     double area = 0.0;
     for (size_t i = 0; i < poly.size(); i++) {
@@ -267,12 +313,18 @@ double signedArea(const std::vector<Point>& poly) {
     return area / 2.0;
 }
 
-// Signed area of triangle abc (positive if CCW).
+/**
+ * @brief Computes the signed area of triangle abc.
+ * @return Positive value for CCW orientation, negative for CW.
+ */
 double triangleArea(const Point& a, const Point& b, const Point& c) {
     return ((b - a).cross(c - a)) / 2.0;
 }
 
-// Returns true if segments a1->a2 and b1->b2 intersect (including collinear endpoint touch).
+/**
+ * @brief Tests whether two line segments intersect.
+ * @return True for any intersection, including endpoint or collinear touching.
+ */
 bool linesIntersect(const Point& a1, const Point& a2, const Point& b1, const Point& b2) {
     auto orient = [](const Point& p, const Point& q, const Point& r) {
         return (q - p).cross(r - p);
@@ -291,7 +343,11 @@ bool linesIntersect(const Point& a1, const Point& a2, const Point& b1, const Poi
     return (o1 > 0) != (o2 > 0) && (o3 > 0) != (o4 > 0);
 }
 
-// Returns +1/0/-1 for CCW/collinear/CW orientation of triangle abc.
+/**
+ * @brief Classifies the orientation of triangle abc.
+ * @param eps Tolerance used to treat near-zero cross products as collinear.
+ * @return +1 for CCW, 0 for collinear, and -1 for CW.
+ */
 int orientationSign(const Point& a, const Point& b, const Point& c, double eps = 1e-9) {
     double cross = (b - a).cross(c - a);
     if (cross > eps) return 1;
@@ -299,7 +355,10 @@ int orientationSign(const Point& a, const Point& b, const Point& c, double eps =
     return 0;
 }
 
-// True if segments a1->a2 and b1->b2 cross at an interior point (strict, no endpoint touch).
+/**
+ * @brief Tests whether two segments cross strictly at interior points.
+ * @return True only for a proper crossing, excluding endpoint contact.
+ */
 bool segmentsProperlyIntersect(const Point& a1, const Point& a2, const Point& b1, const Point& b2) {
     int o1 = orientationSign(a1, a2, b1);
     int o2 = orientationSign(a1, a2, b2);
@@ -308,8 +367,11 @@ bool segmentsProperlyIntersect(const Point& a1, const Point& a2, const Point& b1
     return o1 * o2 < 0 && o3 * o4 < 0;
 }
 
-// Like segmentsProperlyIntersect but also handles collinear endpoint cases.
-// Writes the intersection point to `out` and returns true if any intersection exists.
+/**
+ * @brief Computes an intersection point for two segments when one exists.
+ * @param out Receives the detected intersection point.
+ * @return True if the segments intersect, including collinear endpoint cases.
+ */
 bool segmentIntersectionPoint(const Point& a1, const Point& a2, const Point& b1, const Point& b2, Point& out) {
     int o1 = orientationSign(a1, a2, b1);
     int o2 = orientationSign(a1, a2, b2);
@@ -341,7 +403,10 @@ bool segmentIntersectionPoint(const Point& a1, const Point& a2, const Point& b1,
     return false;
 }
 
-// True if q lies on segment p->r (assuming p, q, r are collinear).
+/**
+ * @brief Tests whether q lies on the segment from p to r.
+ * @return True when q is within the segment bounds, assuming collinearity.
+ */
 bool onSegment(const Point& p, const Point& q, const Point& r) {
     if (q.x <= std::max(p.x, r.x) && q.x >= std::min(p.x, r.x) &&
         q.y <= std::max(p.y, r.y) && q.y >= std::min(p.y, r.y)) {
@@ -350,8 +415,10 @@ bool onSegment(const Point& p, const Point& q, const Point& r) {
     return false;
 }
 
-// Computes the intersection of infinite lines p1->p2 and q1->q2.
-// Returns p1 if lines are parallel (caller should check with tryLineIntersection instead).
+/**
+ * @brief Computes the intersection of two infinite lines.
+ * @return The intersection point, or p1 as a degenerate fallback for parallel lines.
+ */
 Point lineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2) {
     Point r = p2 - p1;
     Point s = q2 - q1;
@@ -364,7 +431,11 @@ Point lineIntersection(const Point& p1, const Point& p2, const Point& q1, const 
     return p1 + r * t;
 }
 
-// Same as lineIntersection but returns false if lines are parallel (safe version).
+/**
+ * @brief Safely computes the intersection of two infinite lines.
+ * @param out Receives the intersection point when one exists.
+ * @return False when the lines are parallel.
+ */
 bool tryLineIntersection(const Point& p1, const Point& p2, const Point& q1, const Point& q2, Point& out) {
     Point r = p2 - p1;
     Point s = q2 - q1;
@@ -378,6 +449,11 @@ bool tryLineIntersection(const Point& p1, const Point& p2, const Point& q1, cons
     return true;
 }
 
+/**
+ * @brief Computes the absolute area enclosed by a polygon.
+ * @param poly Polygon vertices in traversal order.
+ * @return Non-negative polygon area.
+ */
 double polygonAreaAbs(const std::vector<Point>& poly) {
     if (poly.size() < 3) {
         return 0.0;
@@ -392,11 +468,12 @@ double polygonAreaAbs(const std::vector<Point>& poly) {
     return std::abs(twiceArea) / 2.0;
 }
 
-// Computes the areal displacement between two polylines with shared endpoints.
-// Builds a closed loop from polyA forward and polyB reversed, then computes
-// its area. For self-intersecting loops (when the two paths cross), splits
-// the loop at the intersection and sums the two petal areas.
-// Uses strict intersection test (no endpoint touches).
+/**
+ * @brief Computes areal displacement between two polylines with shared endpoints.
+ * @param polyA First polyline.
+ * @param polyB Second polyline.
+ * @return Area enclosed between the two paths using strict segment intersection handling.
+ */
 double polylineDisplacementArea(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
     std::vector<Point> loop = polyA;
     for (size_t idx = polyB.size(); idx-- > 2;) {
@@ -419,9 +496,12 @@ double polylineDisplacementArea(const std::vector<Point>& polyA, const std::vect
     return polygonAreaAbs(loop);
 }
 
-// Like polylineDisplacementArea but uses the loose intersection test that also
-// catches collinear endpoint cases. Used for large multi-ring polygons where
-// near-degenerate configurations are more common.
+/**
+ * @brief Computes areal displacement with looser intersection handling.
+ * @param polyA First polyline.
+ * @param polyB Second polyline.
+ * @return Area enclosed between the two paths, including near-degenerate endpoint cases.
+ */
 double polylineDisplacementAreaLoose(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
     std::vector<Point> loop = polyA;
     for (size_t idx = polyB.size(); idx-- > 2;) {
@@ -441,13 +521,10 @@ double polylineDisplacementAreaLoose(const std::vector<Point>& polyA, const std:
     return polygonAreaAbs(loop);
 }
 
-// Computes E (replacement point) and its areal displacement for the collapse A->B->C->D -> A->E->D.
-// E is placed on either segment AB or CD such that the signed area of the ring is preserved exactly.
-// Two placement strategies are available:
-//   computeClassic:   intersects the "area line" (derived from Kronenfeld et al. eq. for E) with AB or CD.
-//   computeAlternate: places E at the midpoint of BC projected onto the perpendicular to AD,
-//                     used for interior rings with mixed-turn sequences where the classic formula fails.
-// The best strategy (lowest displacement) is selected, with ties broken by geometry.
+/**
+ * @brief Computes the replacement point and displacement for one APSC collapse candidate.
+ * @details Evaluates the classic and alternate placement strategies and keeps the best valid result.
+ */
 void Candidate::computePlacementAndDisplacement() {
     const Point& A = a->p;
     const Point& B = b->p;
@@ -770,12 +847,18 @@ private:
     double cumulativeDisplacement; // running sum of displacement from all collapses so far
     bool debugLogging;           // set via APSC_DEBUG env var
 
+    /** @brief Writes a debug message when `APSC_DEBUG` is enabled. */
     void debug(const std::string& message) const {
         if (debugLogging) {
             std::cerr << message << "\n";
         }
     }
 
+    /**
+     * @brief Dumps the current vertex sequence of a ring for debugging.
+     * @param ringId Ring identifier.
+     * @param activeRing Active nodes in traversal order.
+     */
     void debugRingState(size_t ringId, const std::vector<std::shared_ptr<Node>>& activeRing) const {
         std::ostringstream out;
         out << "ring-state ring=" << ringId << " size=" << activeRing.size();
@@ -785,8 +868,11 @@ private:
         debug(out.str());
     }
 
-    // Traverses the linked list from the first active node, collecting all active nodes in order.
-    // O(n) per call — used both for output and for topology checks.
+    /**
+     * @brief Collects all active nodes of a ring in traversal order.
+     * @param ring Storage vector holding active and inactive nodes for one ring.
+     * @return Active ring nodes as they appear in the linked list.
+     */
     std::vector<std::shared_ptr<Node>> collectActiveRing(const std::vector<std::shared_ptr<Node>>& ring) const {
         std::shared_ptr<Node> start = nullptr;
         for (const auto& node : ring) {
@@ -810,9 +896,10 @@ private:
         return activeRing;
     }
 
-    // Extracts the current active ring geometry as plain Point vectors.
-    // Used by the lookahead/exact-collapse search to create independent copies
-    // of the polygon state for recursive simulation.
+    /**
+     * @brief Captures the current simplified geometry as plain point vectors.
+     * @return Snapshot of every ring, used for lookahead and exact-search simulations.
+     */
     std::vector<std::vector<Point>> snapshotActiveRings() const {
         std::vector<std::vector<Point>> snapshot;
         snapshot.reserve(rings.size());
@@ -841,8 +928,12 @@ private:
         return snapshot;
     }
 
-    // Constructs a fresh Candidate from a ring's current active state.
-    // Used during lookahead to rebuild candidates after simulated collapses.
+    /**
+     * @brief Rebuilds a candidate from the active-state snapshot of a ring.
+     * @param ringId Ring to inspect.
+     * @param bIndex Index of the candidate's B vertex within the active ring.
+     * @return Freshly constructed candidate for the requested local window.
+     */
     Candidate makeCandidateFromActiveIndex(size_t ringId, size_t bIndex) const {
         auto activeRing = collectActiveRing(rings[ringId]);
         size_t n = activeRing.size();
@@ -853,6 +944,10 @@ private:
             activeRing[(bIndex + 2) % n]);
     }
 
+    /**
+     * @brief Enumerates currently valid collapse choices across all rings.
+     * @return Candidate list annotated with ring and local index information.
+     */
     std::vector<CandidateChoice> enumerateValidChoices() {
         std::vector<CandidateChoice> choices;
         for (size_t ringId = 0; ringId < rings.size(); ++ringId) {
@@ -884,6 +979,11 @@ private:
         return choices;
     }
 
+    /**
+     * @brief Serializes a snapshot into a memoization key.
+     * @param snapshot Ring geometry snapshot.
+     * @return String key suitable for exact-search memoization.
+     */
     static std::string snapshotKey(const std::vector<std::vector<Point>>& snapshot) {
         std::ostringstream oss;
         oss << std::setprecision(17);
@@ -896,6 +996,16 @@ private:
         return oss.str();
     }
 
+    /**
+     * @brief Recursively computes the minimum additional displacement needed to reach a target size.
+     * @param snapshot Current ring snapshot.
+     * @param target Desired total vertex count.
+     * @param memo Dynamic-programming cache keyed by snapshot.
+     * @param visitedStates Counter used to enforce the search budget.
+     * @param maxStates Maximum exact-search states to explore.
+     * @param maxChoicesPerState Optional branching cap per state.
+     * @return Best remaining displacement, or infinity if the state budget is exhausted.
+     */
     static double exactBestAdditionalDisplacement(
         const std::vector<std::vector<Point>>& snapshot,
         size_t target,
@@ -961,6 +1071,12 @@ private:
         return best;
     }
 
+    /**
+     * @brief Chooses the next collapse using bounded exact search.
+     * @param maxStates Maximum search states to explore.
+     * @param maxChoicesPerState Optional branching cap per state.
+     * @return Candidate that minimizes final displacement under the explored search space.
+     */
     Candidate chooseExactCollapse(size_t maxStates, size_t maxChoicesPerState = std::numeric_limits<size_t>::max()) {
         auto snapshot = snapshotActiveRings();
         auto choices = enumerateValidChoices();
@@ -1005,6 +1121,11 @@ private:
         return bestChoice.candidate;
     }
 
+    /**
+     * @brief Chooses the next collapse using recursive rollout simulation.
+     * @param lookaheadDepth Remaining rollout depth.
+     * @return Candidate with the best projected final displacement.
+     */
     Candidate chooseLookaheadCollapse(int lookaheadDepth) {
         auto snapshot = snapshotActiveRings();
         auto choices = enumerateValidChoices();
@@ -1029,10 +1150,12 @@ private:
         return bestChoice.candidate;
     }
 
-    // Topology check: returns true only if applying this collapse leaves all rings
-    // simple and non-intersecting. Checks every edge of every ring against the two
-    // new edges A->E and E->D, skipping the three edges A->B, B->C, C->D that are
-    // being replaced. Also rejects stale candidates (inactive nodes) and protected vertices.
+    /**
+     * @brief Verifies that a collapse preserves polygon topology.
+     * @param cand Candidate collapse to validate.
+     * @param logReason When true, emits debug details for rejected candidates.
+     * @return True only when the collapse keeps all rings simple and non-self-intersecting.
+     */
     bool isValidCollapse(const Candidate& cand, bool logReason = false) {
         if (!cand.a->active || !cand.b->active || !cand.c->active || !cand.d->active)
             return false; // stale candidate from lazy-deletion queue
@@ -1085,9 +1208,10 @@ private:
         return true;
     }
 
-    // Re-queues candidates for the two windows that overlap a given node:
-    //   (prev->prev, prev, node, next)  and  (prev, node, next, next->next)
-    // Called after every collapse on the three affected nodes: A, E (new), D.
+    /**
+     * @brief Re-enqueues candidate windows affected by a local topology change.
+     * @param node Center node used to rebuild overlapping candidate windows.
+     */
     void updateNeighbors(std::shared_ptr<Node> node) {
         if (!node->active) return;
 
@@ -1099,9 +1223,13 @@ private:
         }
     }
 
-    // Creates a Candidate and pushes it onto the priority queue.
-    // Stale candidates (pointing to deactivated nodes) are left in the queue
-    // and discarded lazily in the main loop when isValidCollapse returns false.
+    /**
+     * @brief Constructs and queues a candidate when the local node window is valid.
+     * @param a First node in the four-vertex collapse window.
+     * @param b Second node in the four-vertex collapse window.
+     * @param c Third node in the four-vertex collapse window.
+     * @param d Fourth node in the four-vertex collapse window.
+     */
     void addCandidate(std::shared_ptr<Node> a, std::shared_ptr<Node> b,
         std::shared_ptr<Node> c, std::shared_ptr<Node> d) {
         if (!a->active || !b->active || !c->active || !d->active) return;
@@ -1113,9 +1241,10 @@ private:
         }
     }
 
-    // Executes one APSC collapse: removes B and C, inserts E between A and D.
-    // Updates the linked list pointers, marks B/C inactive, accumulates displacement,
-    // and re-queues candidates for the affected neighbourhood.
+    /**
+     * @brief Applies one APSC collapse to the linked-ring structure.
+     * @param cand Candidate to commit.
+     */
     void performCollapse(const Candidate& cand) {
         auto replacement = std::make_shared<Node>(cand.a->ring_id, 0, g_nextNodeOrder++, cand.e);
         replacement->protectedVertex = false;
@@ -1136,7 +1265,11 @@ private:
         updateNeighbors(cand.d);
     }
 
-    // Returns the signed area of the ring's current active vertices.
+    /**
+     * @brief Computes the signed area of one ring's active geometry.
+     * @param ring Ring node storage.
+     * @return Signed ring area.
+     */
     double computeRingArea(const std::vector<std::shared_ptr<Node>>& ring) {
         std::vector<Point> points;
         auto activeRing = collectActiveRing(ring);
@@ -1147,8 +1280,10 @@ private:
         return signedArea(points);
     }
 
-    // Returns the total signed area of the polygon: sum of signed areas across all rings.
-    // CCW exterior rings contribute positive area; CW interior rings contribute negative.
+    /**
+     * @brief Computes the total signed area across all rings.
+     * @return Sum of signed ring areas, with holes contributing negative area.
+     */
     double computeTotalArea() {
         double total = 0.0;
         for (size_t i = 0; i < rings.size(); i++) {
@@ -1157,11 +1292,16 @@ private:
         return total;
     }
 
+    /** @brief Returns the cumulative areal displacement accumulated so far. */
     double computeArealDisplacement() {
         return cumulativeDisplacement;
     }
 
 public:
+    /**
+     * @brief Builds the simplifier state from the input rings.
+     * @param inputRings Input polygon geometry grouped by ring.
+     */
     PolygonSimplifier(const std::vector<std::vector<Point>>& inputRings) {
         totalVertices = 0;
         cumulativeDisplacement = 0.0;
@@ -1577,16 +1717,19 @@ public:
         cleanup();
     }
 
-    // Replaces each ring's raw node vector with only the active nodes in traversal order.
-    // Called once after simplification finishes, before outputResults.
+    /**
+     * @brief Compacts each ring down to only its active nodes.
+     * @details Called after simplification finishes and before final output generation.
+     */
     void cleanup() {
         for (auto& ring : rings) {
             ring = collectActiveRing(ring);
         }
     }
 
-    // Prints the simplified polygon to stdout in the required CSV format, followed by
-    // the three summary lines (total signed area in/out and total areal displacement).
+    /**
+     * @brief Writes the simplified polygon and summary statistics to stdout.
+     */
     void outputResults() {
         std::cout << "ring_id,vertex_id,x,y\n";
 
@@ -1609,8 +1752,11 @@ public:
 
 };
 
-// Reads the input CSV (ring_id, vertex_id, x, y) and returns one vector of Points per ring,
-// sorted by vertex_id within each ring. Skips the header line.
+/**
+ * @brief Reads the input CSV into ring-wise point lists.
+ * @param filename Path to the CSV file.
+ * @return Rings grouped by `ring_id` and sorted by `vertex_id`.
+ */
 std::vector<std::vector<Point>> readInput(const std::string& filename) {
     std::ifstream file(filename);
     std::vector<std::vector<Point>> rings;
@@ -1661,10 +1807,11 @@ std::vector<std::vector<Point>> readInput(const std::string& filename) {
     return rings;
 }
 
-// Formats a coordinate with up to 10 significant digits, stripping trailing zeros.
-// Uses up to 10-k decimal places where k is the number of digits before the decimal point,
-// so small numbers get more decimal places and large ones get fewer.
-// Near-zero values (|v| < 5e-11) are snapped to 0 to avoid printing "-0" or tiny noise.
+/**
+ * @brief Formats an output coordinate with trimmed trailing zeros.
+ * @param value Coordinate value to format.
+ * @return Text representation suited to the required CSV output.
+ */
 std::string formatCoordinate(double value) {
     if (std::abs(value) < 5e-11) {
         value = 0.0;
@@ -1694,6 +1841,12 @@ std::string formatCoordinate(double value) {
     return text;
 }
 
+/**
+ * @brief Entry point for command-line simplification.
+ * @param argc Argument count.
+ * @param argv Argument vector containing the input CSV path and target vertex count.
+ * @return Process exit code.
+ */
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " <input_file.csv> <target_vertices>\n";
