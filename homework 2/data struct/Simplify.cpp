@@ -10,34 +10,46 @@
 #include <queue>
 #include <iomanip>
 
-struct Point {
+struct Point
+{
     double x, y;
 
-    /***** @brief Constructs a point at the origin. *****/
-    Point() : x(0), y(0) {}
-    /***** @brief Constructs a point from explicit x and y coordinates. *****/
+    Point() : x(0.0), y(0.0) {}
     Point(double px, double py) : x(px), y(py) {}
 
-    /***** @brief Adds two points component-wise. *****/
+    // vector addition
     Point operator+(const Point& other) const { return Point(x + other.x, y + other.y); }
-    /***** @brief Subtracts another point component-wise. *****/
+
+    // vector subtraction
     Point operator-(const Point& other) const { return Point(x - other.x, y - other.y); }
-    /***** @brief Multiplies this point by a scalar. *****/
-    Point operator*(double scalar) const { return Point(x * scalar, y * scalar); }
 
-    /***** @brief Returns the 2D cross product magnitude with another vector. *****/
-    double cross(const Point& other) const { return x * other.y - y * other.x; }
-    /***** @brief Returns the Euclidean length of the vector. *****/
-    double length() const { return std::sqrt(x * x + y * y); }
+    // scalar multiply
+    Point operator*(double s) const { return Point(x * s, y * s); }
 
-    /***** @brief Computes the perpendicular distance from this point to the infinite line through a and b. *****/
-    double distanceToLine(const Point& a, const Point& b) const {
+    // 2D cross product (used for orientation / area)
+    double cross(const Point& other) const
+    {
+        return x * other.y - y * other.x;
+    }
+
+    // vector length (distance from origin)
+    double length() const
+    {
+        return std::sqrt(x * x + y * y);
+    }
+
+    // distance from this point to line AB
+    double distanceToLine(const Point& a, const Point& b) const
+    {
         Point ab = b - a;
         double len = ab.length();
-        if (len < 1e-12) {
-            return (*this - a).length(); // Fall back to point-to-point distance for a degenerate line.
-        }
-        return std::abs(ab.cross(*this - a)) / len; // Standard point-to-line distance formula.
+
+        // if A and B are basically the same point
+        if (len < 1e-12)
+            return (*this - a).length();
+
+        // standard point-to-line distance formula
+        return std::abs(ab.cross(*this - a)) / len;
     }
 };
 
@@ -94,6 +106,8 @@ struct Candidate {
 };
 
 /***** @brief Returns the orientation sign of triangle a-b-c. *****/
+// returns orientation of triangle (a,b,c)
+// 1 = left turn, -1 = right turn, 0 = collinear
 int orientationSign(const Point& a, const Point& b, const Point& c, double eps = 1e-9) {
     double cross = (b - a).cross(c - a);
     if (cross > eps) return 1;
@@ -113,6 +127,7 @@ bool segmentsProperlyIntersect(const Point& a1, const Point& a2, const Point& b1
     int o2 = orientationSign(a1, a2, b2);
     int o3 = orientationSign(b1, b2, a1);
     int o4 = orientationSign(b1, b2, a2);
+    // segments cross each other if orientations are opposite
     return o1 * o2 < 0 && o3 * o4 < 0;
 }
 
@@ -174,6 +189,7 @@ double polygonAreaAbs(const std::vector<Point>& poly) {
     for (size_t i = 0; i < poly.size(); ++i) {
         const Point& p = poly[i];
         const Point& q = poly[(i + 1) % poly.size()];
+        // cross product contribution
         twiceArea += p.x * q.y - q.x * p.y;
     }
     return std::abs(twiceArea) * 0.5;
@@ -182,12 +198,14 @@ double polygonAreaAbs(const std::vector<Point>& poly) {
 /***** @brief Computes the areal displacement enclosed by two polylines with shared endpoints. *****/
 double calcArea(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
     std::vector<Point> loop = polyA;
+    // reverse polyB so we form a closed loop
     for (size_t i = polyB.size(); i-- > 2;) {
-        loop.push_back(polyB[i - 1]); // Reverse the second polyline to close the displacement loop.
+        loop.push_back(polyB[i - 1]);
     }
 
     if (loop.size() == 4) {
         Point intersection;
+        // split into two triangles if crossing
         if (getIntersection(loop[0], loop[1], loop[2], loop[3], intersection)) {
             return polygonAreaAbs({ loop[0], intersection, loop[3] }) +
                 polygonAreaAbs({ intersection, loop[1], loop[2] });
@@ -219,10 +237,12 @@ void Candidate::computeE() {
     const Point& C = c->p;
     const Point& D = d->p;
 
+    // equation of line used for area-preserving collapse
     double aCoeff = D.y - A.y;
     double bCoeff = A.x - D.x;
     double cCoeff = -B.y * A.x + (A.y - C.y) * B.x + (B.y - D.y) * C.x + C.y * D.x;
 
+    // helper: check which side of line a point is on
     auto evalLine = [&](const Point& p) {
         return aCoeff * p.x + bCoeff * p.y + cCoeff;
         };
@@ -231,7 +251,7 @@ void Candidate::computeE() {
         return orientationSign(l1, l2, p);
         };
 
-    Point linePoint;
+    Point linePoint; 
     if (std::abs(aCoeff) > std::abs(bCoeff)) {
         linePoint = Point((-cCoeff - bCoeff * A.y) / aCoeff, A.y); // Solve the area-preserving line using a fixed y.
     }
@@ -260,10 +280,10 @@ void Candidate::computeE() {
         Point offsetPoint = linePoint + Point(-bCoeff, aCoeff);
         sideLine = sideOfDirectedLine(offsetPoint, A, D); // Nudge off the line so we can still classify its side.
     }
-
+    // decide whether E should lie closer to AB or CD
     double distB = B.distanceToLine(A, D);
     double distC = C.distanceToLine(A, D);
-
+    // compute intersection point for E
     if (sideB == sideC) {
         placedOnAB = distB >= distC;
     }
@@ -398,19 +418,22 @@ private:
 
     /***** @brief Applies one collapse by replacing B and C with the computed point E. *****/
     void performCollapse(const Candidate& candidate) {
+        // create new point E
         auto replacement = std::make_shared<Node>(candidate.a->ringId, 0, candidate.e);
         replacement->protectedVertex = false;
-
+        // relink A -> E -> D
         candidate.a->next = replacement; // Stitch A -> E into the ring.
         replacement->prev = candidate.a;
         replacement->next = candidate.d;
         candidate.d->prev = replacement; // Stitch E -> D and complete the local relink.
         rings[candidate.a->ringId].push_back(replacement); // Keep ownership of the new node in ring storage.
 
+        // deactivate B and C (removed)
         candidate.b->active = false;
         candidate.c->active = false;
         cumulativeDisplacement += candidate.displacement;
 
+        // update surrounding candidates
         updateNeighbors(candidate.a);
         updateNeighbors(replacement);
         updateNeighbors(candidate.d);
@@ -478,10 +501,10 @@ public:
     /***** @brief Repeatedly applies the best valid collapse until the target vertex count is reached. *****/
     void simplify(size_t target) {
         targetVertices = target;
-
+        // keep collapsing until we reach desired vertex count
         while (totalVertices > targetVertices && !pq.empty()) {
             Candidate best = pq.top();
-            pq.pop(); // Pop first because stale candidates are removed lazily.
+            pq.pop();  // remove smallest displacement candidate
 
             if (!isValidCollapse(best)) {
                 continue;
@@ -493,7 +516,7 @@ public:
                 minRingVertices[best.a->ringId] == 4 &&
                 activeSize == 4 &&
                 totalVertices == targetVertices + 1; // Allow one last collapse to turn a hole into a triangle.
-
+            // prevent polygon from collapsing too much
             if (activeSize <= minRingVertices[best.a->ringId] && !allowFinalInnerTriangle) {
                 continue;
             }
@@ -502,7 +525,7 @@ public:
             --totalVertices;
         }
 
-        cleanup();
+        cleanup();// remove inactive nodes
     }
 
     /***** @brief Replaces each ring storage vector with only its active nodes. *****/
