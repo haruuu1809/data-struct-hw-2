@@ -71,7 +71,7 @@ struct Candidate {
         std::shared_ptr<Node> pc,
         std::shared_ptr<Node> pd)
         : a(pa), b(pb), c(pc), d(pd), e(), displacement(std::numeric_limits<double>::infinity()), placedOnAB(false) {
-        computePlacementAndDisplacement();
+        computeE();
     }
 
     /***** @brief Orders candidates so the priority queue prefers the smallest displacement. *****/
@@ -90,7 +90,7 @@ struct Candidate {
     }
 
     /***** @brief Computes the replacement point and areal displacement for this candidate. *****/
-    void computePlacementAndDisplacement();
+    void computeE();
 };
 
 /***** @brief Returns the orientation sign of triangle a-b-c. *****/
@@ -117,7 +117,7 @@ bool segmentsProperlyIntersect(const Point& a1, const Point& a2, const Point& b1
 }
 
 /***** @brief Finds the intersection point of two segments when one exists. *****/
-bool segmentIntersectionPoint(const Point& a1, const Point& a2, const Point& b1, const Point& b2, Point& out) {
+bool getIntersection(const Point& a1, const Point& a2, const Point& b1, const Point& b2, Point& out) {
     int o1 = orientationSign(a1, a2, b1);
     int o2 = orientationSign(a1, a2, b2);
     int o3 = orientationSign(b1, b2, a1);
@@ -180,7 +180,7 @@ double polygonAreaAbs(const std::vector<Point>& poly) {
 }
 
 /***** @brief Computes the areal displacement enclosed by two polylines with shared endpoints. *****/
-double polylineDisplacementArea(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
+double calcArea(const std::vector<Point>& polyA, const std::vector<Point>& polyB) {
     std::vector<Point> loop = polyA;
     for (size_t i = polyB.size(); i-- > 2;) {
         loop.push_back(polyB[i - 1]); // Reverse the second polyline to close the displacement loop.
@@ -188,11 +188,11 @@ double polylineDisplacementArea(const std::vector<Point>& polyA, const std::vect
 
     if (loop.size() == 4) {
         Point intersection;
-        if (segmentIntersectionPoint(loop[0], loop[1], loop[2], loop[3], intersection)) {
+        if (getIntersection(loop[0], loop[1], loop[2], loop[3], intersection)) {
             return polygonAreaAbs({ loop[0], intersection, loop[3] }) +
                 polygonAreaAbs({ intersection, loop[1], loop[2] });
         }
-        if (segmentIntersectionPoint(loop[1], loop[2], loop[3], loop[0], intersection)) {
+        if (getIntersection(loop[1], loop[2], loop[3], loop[0], intersection)) {
             return polygonAreaAbs({ loop[1], intersection, loop[0] }) +
                 polygonAreaAbs({ intersection, loop[2], loop[3] });
         }
@@ -213,7 +213,7 @@ double signedArea(const std::vector<Point>& poly) {
 }
 
 /***** @brief Chooses the replacement point E and computes the resulting displacement. *****/
-void Candidate::computePlacementAndDisplacement() {
+void Candidate::computeE() {
     const Point& A = a->p;
     const Point& B = b->p;
     const Point& C = c->p;
@@ -282,8 +282,8 @@ void Candidate::computePlacementAndDisplacement() {
 
     auto displacementFor = [&](bool onAB, const Point& point) {
         return onAB
-            ? polylineDisplacementArea({ B, C, D }, { B, point, D })
-            : polylineDisplacementArea({ A, B, C, point }, { A, point });
+            ? calcArea({ B, C, D }, { B, point, D })
+            : calcArea({ A, B, C, point }, { A, point });
         };
 
     if (!hasPrimary && hasSecondary) {
