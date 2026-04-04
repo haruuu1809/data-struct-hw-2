@@ -312,7 +312,7 @@ void Candidate::computeE() {
     };
 
     if (!hasPrimary && hasSecondary) {
-        placedOnAB = !placedOnAB; // Switch to the other segment if the first placement was unavailable.
+        placedOnAB = !placedOnAB; // Switch to the other segment if the first placement unavail.
         e = secondary;
     }
     else if (hasPrimary) {
