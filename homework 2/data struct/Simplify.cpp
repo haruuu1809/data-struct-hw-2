@@ -3,6 +3,7 @@
 // Implements the Area-Preserving Segment Collapse (APSC) algorithm from:
 //   Kronenfeld et al. (2020), International Journal of Cartography 6.1, pp. 22-46.
 //
+// Algorithm overview:
 //   For every consecutive sequence A->B->C->D in any ring, compute a replacement
 //   point E such that area(A->E->D) == area(A->B->C->D). The candidate with the
 //   smallest areal displacement across all rings is collapsed (B and C removed,
