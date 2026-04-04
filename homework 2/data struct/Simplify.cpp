@@ -567,33 +567,46 @@ public:
     }
 
     /***** @brief Repeatedly applies the best valid collapse until the target vertex count is reached. *****/
+// main simplification loop
     void simplify(size_t target) {
-        targetVertices = target;
-        // keep collapsing until we reach desired vertex count
+        targetVertices = target; // store the number of vertices we want in the end
+        // keep simplifying until we reach the target
+        // or until there are no more valid candidates left
         while (totalVertices > targetVertices && !pq.empty()) {
-            Candidate best = pq.top();
-            pq.pop();  // remove smallest displacement candidate
 
+            // get the best candidate (smallest displacement)
+            Candidate best = pq.top();
+            pq.pop();
+
+            //skip it if it is no longer valid
             if (!isValidCollapse(best)) {
                 continue;
             }
-
+            // count how many active vertices are left in this ring
             size_t activeSize = collectActiveRing(rings[best.a->ringId]).size();
+
+            // for inner rings (holes), usually keep at least 4 vertices
+            // but if only need one more collapse overall, allow to become a triangle
             bool allowFinalInnerTriangle =
                 best.a->ringId > 0 &&
                 minRingVertices[best.a->ringId] == 4 &&
                 activeSize == 4 &&
-                totalVertices == targetVertices + 1; // Allow one last collapse to turn a hole into a triangle.
-            // prevent polygon from collapsing too much
+                totalVertices == targetVertices + 1;
+
+            // do not collapse if this ring is already at its minimum size
+            // unless the special case
             if (activeSize <= minRingVertices[best.a->ringId] && !allowFinalInnerTriangle) {
                 continue;
             }
-
+            // remove B and C, replace them with E
             performCollapse(best);
+
+            // (2 removed, 1 new point added)
             --totalVertices;
         }
 
-        cleanup();// remove inactive nodes
+        //remove inactive nodes
+        cleanup();
     }
 
     /***** @brief Replaces each ring storage vector with only its active nodes. *****/
@@ -609,8 +622,8 @@ public:
         for (size_t ringId = 0; ringId < rings.size(); ++ringId) {
             for (size_t vertexId = 0; vertexId < rings[ringId].size(); ++vertexId) {
                 std::cout << ringId << ',' << vertexId << ','
-                    << formatCoordinate(rings[ringId][vertexId]->p.x) << ','
-                    << formatCoordinate(rings[ringId][vertexId]->p.y) << '\n';
+                    << formatting(rings[ringId][vertexId]->p.x) << ','
+                    << formatting(rings[ringId][vertexId]->p.y) << '\n';
             }
         }
 
@@ -621,22 +634,30 @@ public:
     }
 
     /***** @brief Formats one coordinate for CSV output without unnecessary trailing zeros. *****/
-    static std::string formatCoordinate(double value) {
-        if (std::abs(value) < 5e-11) value = 0.0; // Avoid printing tiny floating-point noise like -0.
+    static std::string formatting(double value) {
+        // very small values (like -0.0000000001) are treated as 0
+         // avoids printing -0
+        if (std::abs(value) < 5e-11) value = 0.0; 
 
         double absValue = std::abs(value);
+        // count how many digits are before the decimal point
         int digitsBeforeDecimal = 1;
         if (absValue >= 1.0) {
             digitsBeforeDecimal = static_cast<int>(std::floor(std::log10(absValue))) + 1;
         }
+        // adjust number of decimal places
+        // (prevents numbers from being too long)
         int decimals = std::max(0, 10 - digitsBeforeDecimal);
 
+        // convert number to string
         std::ostringstream out;
         out << std::fixed << std::setprecision(decimals) << value;
         std::string text = out.str();
-
+        // trailing zeros 
         while (!text.empty() && text.back() == '0') text.pop_back();
+        //trailing dot
         if (!text.empty() && text.back() == '.') text.pop_back();
+        //-0
         if (text == "-0") text = "0";
         return text;
     }
@@ -644,11 +665,11 @@ public:
 
 /***** @brief Reads the input CSV and groups vertices by ring id in vertex order. *****/
 std::vector<std::vector<Point>> readInput(const std::string& filename) {
-    std::ifstream file(filename);
+    std::ifstream file(filename); // open input file
     std::vector<std::vector<Point>> rings;
     std::string line;
-
-    std::getline(file, line); // Skip the CSV header row.
+    // skip the header line (ring_id,vertex_id,x,y)
+    std::getline(file, line);
 
     size_t maxRingId = 0;
     std::vector<std::vector<std::pair<size_t, Point>>> tempRings;
@@ -660,7 +681,7 @@ std::vector<std::vector<Point>> readInput(const std::string& filename) {
         std::string token;
         size_t ringId, vertexId;
         double x, y;
-
+        // parse values from CSV (split by comma)
         std::getline(ss, token, ',');
         ringId = std::stoul(token);
         std::getline(ss, token, ',');
@@ -669,22 +690,26 @@ std::vector<std::vector<Point>> readInput(const std::string& filename) {
         x = std::stod(token);
         std::getline(ss, token, ',');
         y = std::stod(token);
-
+        // resize temp storage if we see a new ringId
         if (ringId >= tempRings.size()) {
-            tempRings.resize(ringId + 1); // Grow storage lazily to the largest ring id encountered.
+            tempRings.resize(ringId + 1);
         }
+        // resize temp storage if we see a new ringId
         tempRings[ringId].push_back({ vertexId, Point(x, y) });
+        // keep track of largest ring id
         maxRingId = std::max(maxRingId, ringId);
     }
 
     rings.resize(maxRingId + 1);
+
     for (size_t ringId = 0; ringId < tempRings.size(); ++ringId) {
-        auto& vertices = tempRings[ringId];
+        auto& vertices = tempRings[ringId];       
+        // sort vertices by vertexId to restore correct order
         std::sort(vertices.begin(), vertices.end(),
             [](const auto& lhs, const auto& rhs) {
                 return lhs.first < rhs.first;
             });
-
+        // extract only the Point
         for (const auto& vertex : vertices) {
             rings[ringId].push_back(vertex.second);
         }
@@ -700,12 +725,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // get input file name from command line
     std::string inputFile = argv[1];
+    // convert target vertex count from string to integer
     size_t targetVertices = std::stoul(argv[2]);
 
+    // read input CSV into rings
     std::vector<std::vector<Point>> inputRings = readInput(inputFile);
+
+    // create simplifier using input data
     PolygonSimplifier simplifier(inputRings);
+
+    // run
     simplifier.simplify(targetVertices);
+
+    // output
     simplifier.outputResults();
 
     return 0;
